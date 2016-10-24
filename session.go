@@ -16,10 +16,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-xorm/builder"
 	"github.com/go-xorm/core"
 )
 
-// Struct Session keep a pointer to sql.DB and provides all execution of all
+// Session keep a pointer to sql.DB and provides all execution of all
 // kind of database operations.
 type Session struct {
 	db                     *core.DB
@@ -44,15 +45,23 @@ type Session struct {
 	beforeClosures []func(interface{})
 	afterClosures  []func(interface{})
 
+	prepareStmt bool
 	stmtCache   map[uint32]*core.Stmt //key: hash.Hash32 of (queryStr, len(queryStr))
 	cascadeDeep int
 
 	// !evalphobia! stored the last executed query on this session
+	//beforeSQLExec func(string, ...interface{})
 	lastSQL     string
 	lastSQLArgs []interface{}
 }
 
-// Method Init reset the session as the init status.
+// Clone copy all the session's content and return a new session
+func (session *Session) Clone() *Session {
+	var sess = *session
+	return &sess
+}
+
+// Init reset the session as the init status.
 func (session *Session) Init() {
 	session.Statement.Init()
 	session.Statement.Engine = session.Engine
@@ -60,6 +69,7 @@ func (session *Session) Init() {
 	session.IsCommitedOrRollbacked = false
 	session.IsAutoClose = false
 	session.AutoResetStatement = true
+	session.prepareStmt = false
 
 	// !nashtsai! is lazy init better?
 	session.afterInsertBeans = make(map[interface{}]*[]func(interface{}), 0)
@@ -72,7 +82,7 @@ func (session *Session) Init() {
 	session.lastSQLArgs = []interface{}{}
 }
 
-// Method Close release the connection from pool
+// Close release the connection from pool
 func (session *Session) Close() {
 	for _, v := range session.stmtCache {
 		v.Close()
@@ -97,44 +107,55 @@ func (session *Session) resetStatement() {
 	}
 }
 
-// Method Sql provides raw sql input parameter. When you have a complex SQL statement
-// and cannot use Where, Id, In and etc. Methods to describe, you can use Sql.
-func (session *Session) Sql(querystring string, args ...interface{}) *Session {
-	session.Statement.Sql(querystring, args...)
+// Prepare set a flag to session that should be prepare statment before execute query
+func (session *Session) Prepare() *Session {
+	session.prepareStmt = true
 	return session
 }
 
-// Method Where provides custom query condition.
-func (session *Session) Where(querystring string, args ...interface{}) *Session {
-	session.Statement.Where(querystring, args...)
+// Sql !DEPRECIATED! will be deprecated, please use SQL instead.
+func (session *Session) Sql(query string, args ...interface{}) *Session {
+	return session.SQL(query, args...)
+}
+
+// SQL provides raw sql input parameter. When you have a complex SQL statement
+// and cannot use Where, Id, In and etc. Methods to describe, you can use SQL.
+func (session *Session) SQL(query interface{}, args ...interface{}) *Session {
+	session.Statement.SQL(query, args...)
 	return session
 }
 
-// Method Where provides custom query condition without bean's non-empty fields.
-func (session *Session) NoAutoCondition(querystring string, args ...interface{}) *Session {
-	session.Statement.NoAutoCondition(querystring, args...)
+// Where provides custom query condition.
+func (session *Session) Where(query interface{}, args ...interface{}) *Session {
+	session.Statement.Where(query, args...)
 	return session
 }
 
-// Method Where provides custom query condition.
-func (session *Session) And(querystring string, args ...interface{}) *Session {
-	session.Statement.And(querystring, args...)
+// And provides custom query condition.
+func (session *Session) And(query interface{}, args ...interface{}) *Session {
+	session.Statement.And(query, args...)
 	return session
 }
 
-// Method Where provides custom query condition.
-func (session *Session) Or(querystring string, args ...interface{}) *Session {
-	session.Statement.Or(querystring, args...)
+// Or provides custom query condition.
+func (session *Session) Or(query interface{}, args ...interface{}) *Session {
+	session.Statement.Or(query, args...)
 	return session
 }
 
-// Method Id provides converting id as a query condition
+// Id will be deprecated, please use ID instead
 func (session *Session) Id(id interface{}) *Session {
 	session.Statement.Id(id)
 	return session
 }
 
-// Apply before Processor, affected bean is passed to closure arg
+// ID provides converting id as a query condition
+func (session *Session) ID(id interface{}) *Session {
+	session.Statement.Id(id)
+	return session
+}
+
+// Before Apply before Processor, affected bean is passed to closure arg
 func (session *Session) Before(closures func(interface{})) *Session {
 	if closures != nil {
 		session.beforeClosures = append(session.beforeClosures, closures)
@@ -142,7 +163,7 @@ func (session *Session) Before(closures func(interface{})) *Session {
 	return session
 }
 
-// Apply after Processor, affected bean is passed to closure arg
+// After Apply after Processor, affected bean is passed to closure arg
 func (session *Session) After(closures func(interface{})) *Session {
 	if closures != nil {
 		session.afterClosures = append(session.afterClosures, closures)
@@ -150,70 +171,79 @@ func (session *Session) After(closures func(interface{})) *Session {
 	return session
 }
 
-// Method core.Table can input a string or pointer to struct for special a table to operate.
+// Table can input a string or pointer to struct for special a table to operate.
 func (session *Session) Table(tableNameOrBean interface{}) *Session {
 	session.Statement.Table(tableNameOrBean)
 	return session
 }
 
-// set the table alias
+// Alias set the table alias
 func (session *Session) Alias(alias string) *Session {
 	session.Statement.Alias(alias)
 	return session
 }
 
-// Method In provides a query string like "id in (1, 2, 3)"
+// In provides a query string like "id in (1, 2, 3)"
 func (session *Session) In(column string, args ...interface{}) *Session {
 	session.Statement.In(column, args...)
 	return session
 }
 
-// Method In provides a query string like "count = count + 1"
+// NotIn provides a query string like "id in (1, 2, 3)"
+func (session *Session) NotIn(column string, args ...interface{}) *Session {
+	session.Statement.NotIn(column, args...)
+	return session
+}
+
+// Incr provides a query string like "count = count + 1"
 func (session *Session) Incr(column string, arg ...interface{}) *Session {
 	session.Statement.Incr(column, arg...)
 	return session
 }
 
-// Method Decr provides a query string like "count = count - 1"
+// Decr provides a query string like "count = count - 1"
 func (session *Session) Decr(column string, arg ...interface{}) *Session {
 	session.Statement.Decr(column, arg...)
 	return session
 }
 
-// Method SetExpr provides a query string like "column = {expression}"
+// SetExpr provides a query string like "column = {expression}"
 func (session *Session) SetExpr(column string, expression string) *Session {
 	session.Statement.SetExpr(column, expression)
 	return session
 }
 
-// Method Cols provides some columns to special
+// Select provides some columns to special
 func (session *Session) Select(str string) *Session {
 	session.Statement.Select(str)
 	return session
 }
 
-// Method Cols provides some columns to special
+// Cols provides some columns to special
 func (session *Session) Cols(columns ...string) *Session {
 	session.Statement.Cols(columns...)
 	return session
 }
 
+// AllCols ask all columns
 func (session *Session) AllCols() *Session {
 	session.Statement.AllCols()
 	return session
 }
 
+// MustCols specify some columns must use even if they are empty
 func (session *Session) MustCols(columns ...string) *Session {
 	session.Statement.MustCols(columns...)
 	return session
 }
 
+// NoCascade indicate that no cascade load child object
 func (session *Session) NoCascade() *Session {
 	session.Statement.UseCascade = false
 	return session
 }
 
-// Xorm automatically retrieve condition according struct, but
+// UseBool automatically retrieve condition according struct, but
 // if struct has bool field, it will ignore them. So use UseBool
 // to tell system to do not ignore them.
 // If no paramters, it will use all the bool field of struct, or
@@ -223,7 +253,7 @@ func (session *Session) UseBool(columns ...string) *Session {
 	return session
 }
 
-// use for distinct columns. Caution: when you are using cache,
+// Distinct use for distinct columns. Caution: when you are using cache,
 // distinct will not be cached because cache system need id,
 // but distinct will not provide id
 func (session *Session) Distinct(columns ...string) *Session {
@@ -231,69 +261,75 @@ func (session *Session) Distinct(columns ...string) *Session {
 	return session
 }
 
-// Set Read/Write locking for UPDATE
+// ForUpdate Set Read/Write locking for UPDATE
 func (session *Session) ForUpdate() *Session {
 	session.Statement.IsForUpdate = true
 	return session
 }
 
-// Only not use the paramters as select or update columns
+// Omit Only not use the paramters as select or update columns
 func (session *Session) Omit(columns ...string) *Session {
 	session.Statement.Omit(columns...)
 	return session
 }
 
-// Set null when column is zero-value and nullable for update
+// Nullable Set null when column is zero-value and nullable for update
 func (session *Session) Nullable(columns ...string) *Session {
 	session.Statement.Nullable(columns...)
 	return session
 }
 
-// Method NoAutoTime means do not automatically give created field and updated field
+// NoAutoTime means do not automatically give created field and updated field
 // the current time on the current session temporarily
 func (session *Session) NoAutoTime() *Session {
 	session.Statement.UseAutoTime = false
 	return session
 }
 
-// Method Limit provide limit and offset query condition
+// NoAutoCondition disable generate SQL condition from beans
+func (session *Session) NoAutoCondition(no ...bool) *Session {
+	session.Statement.NoAutoCondition(no...)
+	return session
+}
+
+// Limit provide limit and offset query condition
 func (session *Session) Limit(limit int, start ...int) *Session {
 	session.Statement.Limit(limit, start...)
 	return session
 }
 
-// Method OrderBy provide order by query condition, the input parameter is the content
+// OrderBy provide order by query condition, the input parameter is the content
 // after order by on a sql statement.
 func (session *Session) OrderBy(order string) *Session {
 	session.Statement.OrderBy(order)
 	return session
 }
 
-// Method Desc provide desc order by query condition, the input parameters are columns.
+// Desc provide desc order by query condition, the input parameters are columns.
 func (session *Session) Desc(colNames ...string) *Session {
 	session.Statement.Desc(colNames...)
 	return session
 }
 
-// Method Asc provide asc order by query condition, the input parameters are columns.
+// Asc provide asc order by query condition, the input parameters are columns.
 func (session *Session) Asc(colNames ...string) *Session {
 	session.Statement.Asc(colNames...)
 	return session
 }
 
-// Method StoreEngine is only avialble mysql dialect currently
+// StoreEngine is only avialble mysql dialect currently
 func (session *Session) StoreEngine(storeEngine string) *Session {
 	session.Statement.StoreEngine = storeEngine
 	return session
 }
 
-// Method Charset is only avialble mysql dialect currently
+// Charset is only avialble mysql dialect currently
 func (session *Session) Charset(charset string) *Session {
 	session.Statement.Charset = charset
 	return session
 }
 
-// Method Cascade indicates if loading sub Struct
+// Cascade indicates if loading sub Struct
 func (session *Session) Cascade(trueOrFalse ...bool) *Session {
 	if len(trueOrFalse) >= 1 {
 		session.Statement.UseCascade = trueOrFalse[0]
@@ -301,37 +337,43 @@ func (session *Session) Cascade(trueOrFalse ...bool) *Session {
 	return session
 }
 
-// Method NoCache ask this session do not retrieve data from cache system and
+// NoCache ask this session do not retrieve data from cache system and
 // get data from database directly.
 func (session *Session) NoCache() *Session {
 	session.Statement.UseCache = false
 	return session
 }
 
-//The join_operator should be one of INNER, LEFT OUTER, CROSS etc - this will be prepended to JOIN
-func (session *Session) Join(join_operator string, tablename interface{}, condition string) *Session {
-	session.Statement.Join(join_operator, tablename, condition)
+// Join join_operator should be one of INNER, LEFT OUTER, CROSS etc - this will be prepended to JOIN
+func (session *Session) Join(joinOperator string, tablename interface{}, condition string, args ...interface{}) *Session {
+	session.Statement.Join(joinOperator, tablename, condition, args...)
 	return session
 }
 
-// Generate Group By statement
+// GroupBy Generate Group By statement
 func (session *Session) GroupBy(keys string) *Session {
 	session.Statement.GroupBy(keys)
 	return session
 }
 
-// Generate Having statement
+// Having Generate Having statement
 func (session *Session) Having(conditions string) *Session {
 	session.Statement.Having(conditions)
 	return session
 }
 
+// DB db return the wrapper of sql.DB
 func (session *Session) DB() *core.DB {
 	if session.db == nil {
 		session.db = session.Engine.db
 		session.stmtCache = make(map[uint32]*core.Stmt, 0)
 	}
 	return session.db
+}
+
+// Cond return session's conditions
+func (session *Session) Conds() builder.Cond {
+	return session.Statement.cond
 }
 
 // Begin a transaction
@@ -349,7 +391,7 @@ func (session *Session) Begin() error {
 	return nil
 }
 
-// When using transaction, you can rollback if any error
+// Rollback When using transaction, you can rollback if any error
 func (session *Session) Rollback() error {
 	if !session.IsAutoCommit && !session.IsCommitedOrRollbacked {
 		session.saveLastSQL(session.Engine.dialect.RollBackStr())
@@ -359,7 +401,7 @@ func (session *Session) Rollback() error {
 	return nil
 }
 
-// When using transaction, Commit will commit all operations.
+// Commit When using transaction, Commit will commit all operations.
 func (session *Session) Commit() error {
 	if !session.IsAutoCommit && !session.IsCommitedOrRollbacked {
 		session.saveLastSQL("COMMIT")
@@ -425,12 +467,14 @@ func (session *Session) scanMapIntoStruct(obj interface{}, objMap map[string][]b
 	}
 
 	var col *core.Column
-	table := session.Engine.autoMapType(dataStruct)
+	session.Statement.setRefValue(dataStruct)
+	table := session.Statement.RefTable
+	tableName := session.Statement.tableName
 
 	for key, data := range objMap {
 		if col = table.GetColumn(key); col == nil {
-			session.Engine.LogWarn(fmt.Sprintf("struct %v's has not field %v. %v",
-				table.Type.Name(), key, table.ColumnsSeq()))
+			session.Engine.logger.Warnf("struct %v's has not field %v. %v",
+				table.Type.Name(), key, table.ColumnsSeq())
 			continue
 		}
 
@@ -438,7 +482,7 @@ func (session *Session) scanMapIntoStruct(obj interface{}, objMap map[string][]b
 		fieldPath := strings.Split(fieldName, ".")
 		var fieldValue reflect.Value
 		if len(fieldPath) > 2 {
-			session.Engine.LogError("Unsupported mutliderive", fieldName)
+			session.Engine.logger.Error("Unsupported mutliderive", fieldName)
 			continue
 		} else if len(fieldPath) == 2 {
 			parentField := dataStruct.FieldByName(fieldPath[0])
@@ -449,8 +493,7 @@ func (session *Session) scanMapIntoStruct(obj interface{}, objMap map[string][]b
 			fieldValue = dataStruct.FieldByName(fieldName)
 		}
 		if !fieldValue.IsValid() || !fieldValue.CanSet() {
-			session.Engine.LogWarn("table %v's column %v is not valid or cannot set",
-				table.Name, key)
+			session.Engine.logger.Warnf("table %v's column %v is not valid or cannot set", tableName, key)
 			continue
 		}
 
@@ -463,31 +506,35 @@ func (session *Session) scanMapIntoStruct(obj interface{}, objMap map[string][]b
 	return nil
 }
 
-//Execute sql
+// Execute sql
 func (session *Session) innerExec(sqlStr string, args ...interface{}) (sql.Result, error) {
-	stmt, err := session.doPrepare(sqlStr)
-	if err != nil {
-		return nil, err
-	}
-	//defer stmt.Close()
+	if session.prepareStmt {
+		stmt, err := session.doPrepare(sqlStr)
+		if err != nil {
+			return nil, err
+		}
 
-	res, err := stmt.Exec(args...)
-	if err != nil {
-		return nil, err
+		res, err := stmt.Exec(args...)
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
 	}
-	return res, nil
+
+	return session.DB().Exec(sqlStr, args...)
 }
 
 func (session *Session) exec(sqlStr string, args ...interface{}) (sql.Result, error) {
 	for _, filter := range session.Engine.dialect.Filters() {
+		// TODO: for table name, it's no need to RefTable
 		sqlStr = filter.Do(sqlStr, session.Engine.dialect, session.Statement.RefTable)
 	}
 
 	session.saveLastSQL(sqlStr, args...)
 
-	return session.Engine.LogSQLExecutionTime(sqlStr, args, func() (sql.Result, error) {
+	return session.Engine.logSQLExecutionTime(sqlStr, args, func() (sql.Result, error) {
 		if session.IsAutoCommit {
-			//oci8 can not auto commit (github.com/mattn/go-oci8)
+			// FIXME: oci8 can not auto commit (github.com/mattn/go-oci8)
 			if session.Engine.dialect.DBType() == core.ORACLE {
 				session.Begin()
 				r, err := session.Tx.Exec(sqlStr, args...)
@@ -510,9 +557,10 @@ func (session *Session) Exec(sqlStr string, args ...interface{}) (sql.Result, er
 	return session.exec(sqlStr, args...)
 }
 
-// this function create a table according a bean
+// CreateTable create a table according a bean
 func (session *Session) CreateTable(bean interface{}) error {
-	session.Statement.RefTable = session.Engine.TableInfo(bean)
+	v := rValue(bean)
+	session.Statement.setRefValue(v)
 
 	defer session.resetStatement()
 	if session.IsAutoClose {
@@ -522,9 +570,10 @@ func (session *Session) CreateTable(bean interface{}) error {
 	return session.createOneTable()
 }
 
-// create indexes
+// CreateIndexes create indexes
 func (session *Session) CreateIndexes(bean interface{}) error {
-	session.Statement.RefTable = session.Engine.TableInfo(bean)
+	v := rValue(bean)
+	session.Statement.setRefValue(v)
 
 	defer session.resetStatement()
 	if session.IsAutoClose {
@@ -541,9 +590,10 @@ func (session *Session) CreateIndexes(bean interface{}) error {
 	return nil
 }
 
-// create uniques
+// CreateUniques create uniques
 func (session *Session) CreateUniques(bean interface{}) error {
-	session.Statement.RefTable = session.Engine.TableInfo(bean)
+	v := rValue(bean)
+	session.Statement.setRefValue(v)
 
 	defer session.resetStatement()
 	if session.IsAutoClose {
@@ -562,21 +612,21 @@ func (session *Session) CreateUniques(bean interface{}) error {
 
 func (session *Session) createOneTable() error {
 	sqlStr := session.Statement.genCreateTableSQL()
-	session.Engine.LogDebug("create table sql: [", sqlStr, "]")
 	_, err := session.exec(sqlStr)
 	return err
 }
 
 // to be deleted
 func (session *Session) createAll() error {
-	defer session.resetStatement()
 	if session.IsAutoClose {
 		defer session.Close()
 	}
 
 	for _, table := range session.Engine.Tables {
 		session.Statement.RefTable = table
+		session.Statement.tableName = table.Name
 		err := session.createOneTable()
+		session.resetStatement()
 		if err != nil {
 			return err
 		}
@@ -584,8 +634,11 @@ func (session *Session) createAll() error {
 	return nil
 }
 
-// drop indexes
+// DropIndexes drop indexes
 func (session *Session) DropIndexes(bean interface{}) error {
+	v := rValue(bean)
+	session.Statement.setRefValue(v)
+
 	defer session.resetStatement()
 	if session.IsAutoClose {
 		defer session.Close()
@@ -601,7 +654,7 @@ func (session *Session) DropIndexes(bean interface{}) error {
 	return nil
 }
 
-// drop table will drop table if exist, if drop failed, it will return error
+// DropTable drop table will drop table if exist, if drop failed, it will return error
 func (session *Session) DropTable(beanOrTableName interface{}) error {
 	tableName, err := session.Engine.tableName(beanOrTableName)
 	if err != nil {
@@ -626,43 +679,11 @@ func (session *Session) DropTable(beanOrTableName interface{}) error {
 	return nil
 }
 
-func (statement *Statement) JoinColumns(cols []*core.Column, includeTableName bool) string {
-	var colnames = make([]string, len(cols))
-	for i, col := range cols {
-		if includeTableName {
-			colnames[i] = statement.Engine.Quote(statement.TableName()) +
-				"." + statement.Engine.Quote(col.Name)
-		} else {
-			colnames[i] = statement.Engine.Quote(col.Name)
-		}
-	}
-	return strings.Join(colnames, ", ")
-}
-
-func (statement *Statement) convertIdSql(sqlStr string) string {
-	if statement.RefTable != nil {
-		cols := statement.RefTable.PKColumns()
-		if len(cols) == 0 {
-			return ""
-		}
-
-		colstrs := statement.JoinColumns(cols, false)
-		sqls := splitNNoCase(sqlStr, " from ", 2)
-		if len(sqls) != 2 {
-			return ""
-		}
-		if statement.Engine.dialect.DBType() == "ql" {
-			return fmt.Sprintf("SELECT id() FROM %v", sqls[1])
-		}
-		return fmt.Sprintf("SELECT %s FROM %v", colstrs, sqls[1])
-	}
-	return ""
-}
-
 func (session *Session) canCache() bool {
 	if session.Statement.RefTable == nil ||
 		session.Statement.JoinStr != "" ||
 		session.Statement.RawSQL != "" ||
+		!session.Statement.UseCache ||
 		session.Tx != nil ||
 		len(session.Statement.selectStr) > 0 {
 		return false
@@ -679,14 +700,14 @@ func (session *Session) cacheGet(bean interface{}, sqlStr string, args ...interf
 	for _, filter := range session.Engine.dialect.Filters() {
 		sqlStr = filter.Do(sqlStr, session.Engine.dialect, session.Statement.RefTable)
 	}
-	newsql := session.Statement.convertIdSql(sqlStr)
+	newsql := session.Statement.convertIDSQL(sqlStr)
 	if newsql == "" {
 		return false, ErrCacheFailed
 	}
 
 	cacher := session.Engine.getCacher2(session.Statement.RefTable)
 	tableName := session.Statement.TableName()
-	session.Engine.LogDebug("[cacheGet] find sql:", newsql, args)
+	session.Engine.logger.Debug("[cacheGet] find sql:", newsql, args)
 	ids, err := core.GetCacheSql(cacher, tableName, newsql, args)
 	table := session.Statement.RefTable
 	if err != nil {
@@ -722,26 +743,26 @@ func (session *Session) cacheGet(bean interface{}, sqlStr string, args ...interf
 		}
 
 		ids = []core.PK{pk}
-		session.Engine.LogDebug("[cacheGet] cache ids:", newsql, ids)
+		session.Engine.logger.Debug("[cacheGet] cache ids:", newsql, ids)
 		err = core.PutCacheSql(cacher, ids, tableName, newsql, args)
 		if err != nil {
 			return false, err
 		}
 	} else {
-		session.Engine.LogDebug("[cacheGet] cache hit sql:", newsql)
+		session.Engine.logger.Debug("[cacheGet] cache hit sql:", newsql)
 	}
 
 	if len(ids) > 0 {
 		structValue := reflect.Indirect(reflect.ValueOf(bean))
 		id := ids[0]
-		session.Engine.LogDebug("[cacheGet] get bean:", tableName, id)
+		session.Engine.logger.Debug("[cacheGet] get bean:", tableName, id)
 		sid, err := id.ToString()
 		if err != nil {
 			return false, err
 		}
 		cacheBean := cacher.GetBean(tableName, sid)
 		if cacheBean == nil {
-			newSession := session.Engine.NewSession()
+			/*newSession := session.Engine.NewSession()
 			defer newSession.Close()
 			cacheBean = reflect.New(structValue.Type()).Interface()
 			newSession.Id(id).NoCache()
@@ -752,14 +773,17 @@ func (session *Session) cacheGet(bean interface{}, sqlStr string, args ...interf
 				newSession.NoCascade()
 			}
 			has, err = newSession.Get(cacheBean)
+			*/
+			cacheBean = bean
+			has, err = session.nocacheGet(cacheBean, sqlStr, args...)
 			if err != nil || !has {
 				return has, err
 			}
 
-			session.Engine.LogDebug("[cacheGet] cache bean:", tableName, id, cacheBean)
+			session.Engine.logger.Debug("[cacheGet] cache bean:", tableName, id, cacheBean)
 			cacher.PutBean(tableName, sid, cacheBean)
 		} else {
-			session.Engine.LogDebug("[cacheGet] cache hit bean:", tableName, id, cacheBean)
+			session.Engine.logger.Debug("[cacheGet] cache hit bean:", tableName, id, cacheBean)
 			has = true
 		}
 		structValue.Set(reflect.Indirect(reflect.ValueOf(cacheBean)))
@@ -780,14 +804,16 @@ func (session *Session) cacheFind(t reflect.Type, sqlStr string, rowsSlicePtr in
 		sqlStr = filter.Do(sqlStr, session.Engine.dialect, session.Statement.RefTable)
 	}
 
-	newsql := session.Statement.convertIdSql(sqlStr)
+	newsql := session.Statement.convertIDSQL(sqlStr)
 	if newsql == "" {
 		return ErrCacheFailed
 	}
 
+	tableName := session.Statement.TableName()
+
 	table := session.Statement.RefTable
 	cacher := session.Engine.getCacher2(table)
-	ids, err := core.GetCacheSql(cacher, session.Statement.TableName(), newsql, args)
+	ids, err := core.GetCacheSql(cacher, tableName, newsql, args)
 	if err != nil {
 		rows, err := session.DB().Query(newsql, args...)
 		if err != nil {
@@ -800,7 +826,7 @@ func (session *Session) cacheFind(t reflect.Type, sqlStr string, rowsSlicePtr in
 		for rows.Next() {
 			i++
 			if i > 500 {
-				session.Engine.LogDebug("[cacheFind] ids length > 500, no cache")
+				session.Engine.logger.Debug("[cacheFind] ids length > 500, no cache")
 				return ErrCacheFailed
 			}
 			var res = make([]string, len(table.PrimaryKeys))
@@ -827,23 +853,21 @@ func (session *Session) cacheFind(t reflect.Type, sqlStr string, rowsSlicePtr in
 			ids = append(ids, pk)
 		}
 
-		tableName := session.Statement.TableName()
-
-		session.Engine.LogDebug("[cacheFind] cache sql:", ids, tableName, newsql, args)
+		session.Engine.logger.Debug("[cacheFind] cache sql:", ids, tableName, newsql, args)
 		err = core.PutCacheSql(cacher, ids, tableName, newsql, args)
 		if err != nil {
 			return err
 		}
 	} else {
-		session.Engine.LogDebug("[cacheFind] cache hit sql:", newsql, args)
+		session.Engine.logger.Debug("[cacheFind] cache hit sql:", newsql, args)
 	}
 
 	sliceValue := reflect.Indirect(reflect.ValueOf(rowsSlicePtr))
 
 	ididxes := make(map[string]int)
-	var ides []core.PK = make([]core.PK, 0)
-	var temps []interface{} = make([]interface{}, len(ids))
-	tableName := session.Statement.TableName()
+	var ides []core.PK
+	var temps = make([]interface{}, len(ids))
+
 	for idx, id := range ids {
 		sid, err := id.ToString()
 		if err != nil {
@@ -854,7 +878,7 @@ func (session *Session) cacheFind(t reflect.Type, sqlStr string, rowsSlicePtr in
 			ides = append(ides, id)
 			ididxes[sid] = idx
 		} else {
-			session.Engine.LogDebug("[cacheFind] cache hit bean:", tableName, id, bean)
+			session.Engine.logger.Debug("[cacheFind] cache hit bean:", tableName, id, bean)
 
 			pk := session.Engine.IdOf(bean)
 			xid, err := pk.ToString()
@@ -863,7 +887,7 @@ func (session *Session) cacheFind(t reflect.Type, sqlStr string, rowsSlicePtr in
 			}
 
 			if sid != xid {
-				session.Engine.LogError("[cacheFind] error cache", xid, sid, bean)
+				session.Engine.logger.Error("[cacheFind] error cache", xid, sid, bean)
 				return ErrCacheFailed
 			}
 			temps[idx] = bean
@@ -878,20 +902,19 @@ func (session *Session) cacheFind(t reflect.Type, sqlStr string, rowsSlicePtr in
 		beans := slices.Interface()
 
 		if len(table.PrimaryKeys) == 1 {
-			ff := make([]interface{}, 0)
+			ff := make([]interface{}, 0, len(ides))
 			for _, ie := range ides {
 				ff = append(ff, ie[0])
 			}
 
-			newSession.In(table.PrimaryKeys[0], ff...)
+			newSession.In("`"+table.PrimaryKeys[0]+"`", ff...)
 		} else {
-			var kn = make([]string, 0)
-			for _, name := range table.PrimaryKeys {
-				kn = append(kn, name+" = ?")
-			}
-			condi := "(" + strings.Join(kn, " AND ") + ")"
 			for _, ie := range ides {
-				newSession.Or(condi, ie...)
+				cond := builder.NewCond()
+				for i, name := range table.PrimaryKeys {
+					cond = cond.And(builder.Eq{"`" + name + "`": ie[i]})
+				}
+				newSession.Or(cond)
 			}
 		}
 
@@ -906,15 +929,15 @@ func (session *Session) cacheFind(t reflect.Type, sqlStr string, rowsSlicePtr in
 			if rv.Kind() != reflect.Ptr {
 				rv = rv.Addr()
 			}
-			bean := rv.Interface()
-			id := session.Engine.IdOf(bean)
+			id := session.Engine.IdOfV(rv)
 			sid, err := id.ToString()
 			if err != nil {
 				return err
 			}
 
+			bean := rv.Interface()
 			temps[ididxes[sid]] = bean
-			session.Engine.LogDebug("[cacheFind] cache bean:", tableName, id, bean, temps)
+			session.Engine.logger.Debug("[cacheFind] cache bean:", tableName, id, bean, temps)
 			cacher.PutBean(tableName, sid, bean)
 		}
 	}
@@ -922,7 +945,7 @@ func (session *Session) cacheFind(t reflect.Type, sqlStr string, rowsSlicePtr in
 	for j := 0; j < len(temps); j++ {
 		bean := temps[j]
 		if bean == nil {
-			session.Engine.LogWarn("[cacheFind] cache no hit:", tableName, ids[j], temps)
+			session.Engine.logger.Warn("[cacheFind] cache no hit:", tableName, ids[j], temps)
 			// return errors.New("cache error") // !nashtsai! no need to return error, but continue instead
 			continue
 		}
@@ -933,11 +956,11 @@ func (session *Session) cacheFind(t reflect.Type, sqlStr string, rowsSlicePtr in
 				sliceValue.Set(reflect.Append(sliceValue, reflect.Indirect(reflect.ValueOf(bean))))
 			}
 		} else if sliceValue.Kind() == reflect.Map {
-			var key core.PK = ids[j]
+			var key = ids[j]
 			keyType := sliceValue.Type().Key()
 			var ikey interface{}
 			if len(key) == 1 {
-				ikey, err = Atot(fmt.Sprintf("%v", key[0]), keyType)
+				ikey, err = str2PK(fmt.Sprintf("%v", key[0]), keyType)
 				if err != nil {
 					return err
 				}
@@ -962,7 +985,7 @@ func (session *Session) cacheFind(t reflect.Type, sqlStr string, rowsSlicePtr in
 // IterFunc only use by Iterate
 type IterFunc func(idx int, bean interface{}) error
 
-// Return sql.Rows compatible Rows obj, as a forward Iterator object for iterating record by record, bean's non-empty fields
+// Rows return sql.Rows compatible Rows obj, as a forward Iterator object for iterating record by record, bean's non-empty fields
 // are conditions.
 func (session *Session) Rows(bean interface{}) (*Rows, error) {
 	return newRows(session, bean)
@@ -977,7 +1000,7 @@ func (session *Session) Iterate(bean interface{}, fun IterFunc) error {
 		return err
 	}
 	defer rows.Close()
-	//b := reflect.New(iterator.beanType).Interface()
+
 	i := 0
 	for rows.Next() {
 		b := reflect.New(rows.beanType).Interface()
@@ -1009,50 +1032,12 @@ func (session *Session) doPrepare(sqlStr string) (stmt *core.Stmt, err error) {
 	return
 }
 
-// get retrieve one record from database, bean's non-empty fields
-// will be as conditions
-func (session *Session) Get(bean interface{}) (bool, error) {
-	defer session.resetStatement()
-	if session.IsAutoClose {
-		defer session.Close()
-	}
-
-	session.Statement.Limit(1)
-	var sqlStr string
-	var args []interface{}
-
-	if session.Statement.RefTable == nil {
-		session.Statement.RefTable = session.Engine.TableInfo(bean)
-	}
-
-	if session.Statement.RawSQL == "" {
-		sqlStr, args = session.Statement.genGetSql(bean)
-	} else {
-		sqlStr = session.Statement.RawSQL
-		args = session.Statement.RawParams
-	}
-
-	if session.Statement.JoinStr == "" {
-		if cacher := session.Engine.getCacher2(session.Statement.RefTable); cacher != nil &&
-			session.Statement.UseCache &&
-			!session.Statement.unscoped {
-			has, err := session.cacheGet(bean, sqlStr, args...)
-			if err != ErrCacheFailed {
-				return has, err
-			}
-		}
-	}
-
+func (session *Session) nocacheGet(bean interface{}, sqlStr string, args ...interface{}) (bool, error) {
 	var rawRows *core.Rows
 	var err error
 	session.queryPreprocess(&sqlStr, args...)
 	if session.IsAutoCommit {
-		stmt, errPrepare := session.doPrepare(sqlStr)
-		if errPrepare != nil {
-			return false, errPrepare
-		}
-		// defer stmt.Close() // !nashtsai! don't close due to stmt is cached and bounded to this session
-		rawRows, err = stmt.Query(args...)
+		_, rawRows, err = session.innerQuery(sqlStr, args...)
 	} else {
 		rawRows, err = session.Tx.Query(sqlStr, args...)
 	}
@@ -1071,6 +1056,43 @@ func (session *Session) Get(bean interface{}) (bool, error) {
 	return false, nil
 }
 
+// Get retrieve one record from database, bean's non-empty fields
+// will be as conditions
+func (session *Session) Get(bean interface{}) (bool, error) {
+	defer session.resetStatement()
+	if session.IsAutoClose {
+		defer session.Close()
+	}
+
+	session.Statement.setRefValue(rValue(bean))
+
+	var sqlStr string
+	var args []interface{}
+
+	if session.Statement.RawSQL == "" {
+		if len(session.Statement.TableName()) <= 0 {
+			return false, ErrTableNotFound
+		}
+		session.Statement.Limit(1)
+		sqlStr, args = session.Statement.genGetSQL(bean)
+	} else {
+		sqlStr = session.Statement.RawSQL
+		args = session.Statement.RawParams
+	}
+
+	if session.canCache() {
+		if cacher := session.Engine.getCacher2(session.Statement.RefTable); cacher != nil &&
+			!session.Statement.unscoped {
+			has, err := session.cacheGet(bean, sqlStr, args...)
+			if err != ErrCacheFailed {
+				return has, err
+			}
+		}
+	}
+
+	return session.nocacheGet(bean, sqlStr, args...)
+}
+
 // Count counts the records. bean's non-empty fields
 // are conditions.
 func (session *Session) Count(bean interface{}) (int64, error) {
@@ -1082,96 +1104,177 @@ func (session *Session) Count(bean interface{}) (int64, error) {
 	var sqlStr string
 	var args []interface{}
 	if session.Statement.RawSQL == "" {
-		sqlStr, args = session.Statement.genCountSql(bean)
+		sqlStr, args = session.Statement.genCountSQL(bean)
 	} else {
 		sqlStr = session.Statement.RawSQL
 		args = session.Statement.RawParams
 	}
 
-	resultsSlice, err := session.query(sqlStr, args...)
+	session.queryPreprocess(&sqlStr, args...)
+
+	var err error
+	var total int64
+	if session.IsAutoCommit {
+		err = session.DB().QueryRow(sqlStr, args...).Scan(&total)
+	} else {
+		err = session.Tx.QueryRow(sqlStr, args...).Scan(&total)
+	}
 	if err != nil {
 		return 0, err
 	}
 
-	var total int64 = 0
-	if len(resultsSlice) > 0 {
-		results := resultsSlice[0]
-		for _, value := range results {
-			total, err = strconv.ParseInt(string(value), 10, 64)
-			break
-		}
-	}
-
-	return int64(total), err
+	return total, nil
 }
 
-func Atot(s string, tp reflect.Type) (interface{}, error) {
-	var err error
-	var result interface{}
-	switch tp.Kind() {
-	case reflect.Int:
-		result, err = strconv.Atoi(s)
-		if err != nil {
-			return nil, errors.New("convert " + s + " as int: " + err.Error())
-		}
-	case reflect.Int8:
-		x, err := strconv.Atoi(s)
-		if err != nil {
-			return nil, errors.New("convert " + s + " as int16: " + err.Error())
-		}
-		result = int8(x)
-	case reflect.Int16:
-		x, err := strconv.Atoi(s)
-		if err != nil {
-			return nil, errors.New("convert " + s + " as int16: " + err.Error())
-		}
-		result = int16(x)
-	case reflect.Int32:
-		x, err := strconv.Atoi(s)
-		if err != nil {
-			return nil, errors.New("convert " + s + " as int32: " + err.Error())
-		}
-		result = int32(x)
-	case reflect.Int64:
-		result, err = strconv.ParseInt(s, 10, 64)
-		if err != nil {
-			return nil, errors.New("convert " + s + " as int64: " + err.Error())
-		}
-	case reflect.Uint:
-		x, err := strconv.ParseUint(s, 10, 64)
-		if err != nil {
-			return nil, errors.New("convert " + s + " as uint: " + err.Error())
-		}
-		result = uint(x)
-	case reflect.Uint8:
-		x, err := strconv.ParseUint(s, 10, 64)
-		if err != nil {
-			return nil, errors.New("convert " + s + " as uint8: " + err.Error())
-		}
-		result = uint8(x)
-	case reflect.Uint16:
-		x, err := strconv.ParseUint(s, 10, 64)
-		if err != nil {
-			return nil, errors.New("convert " + s + " as uint16: " + err.Error())
-		}
-		result = uint16(x)
-	case reflect.Uint32:
-		x, err := strconv.ParseUint(s, 10, 64)
-		if err != nil {
-			return nil, errors.New("convert " + s + " as uint32: " + err.Error())
-		}
-		result = uint32(x)
-	case reflect.Uint64:
-		result, err = strconv.ParseUint(s, 10, 64)
-		if err != nil {
-			return nil, errors.New("convert " + s + " as uint64: " + err.Error())
-		}
-	case reflect.String:
-		result = s
-	default:
-		panic("unsupported convert type")
+// Sum call sum some column. bean's non-empty fields are conditions.
+func (session *Session) Sum(bean interface{}, columnName string) (float64, error) {
+	defer session.resetStatement()
+	if session.IsAutoClose {
+		defer session.Close()
 	}
-	return result, nil
+
+	var sqlStr string
+	var args []interface{}
+	if len(session.Statement.RawSQL) == 0 {
+		sqlStr, args = session.Statement.genSumSQL(bean, columnName)
+	} else {
+		sqlStr = session.Statement.RawSQL
+		args = session.Statement.RawParams
+	}
+
+	session.queryPreprocess(&sqlStr, args...)
+
+	var err error
+	var res float64
+	if session.IsAutoCommit {
+		err = session.DB().QueryRow(sqlStr, args...).Scan(&res)
+	} else {
+		err = session.Tx.QueryRow(sqlStr, args...).Scan(&res)
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	return res, nil
+}
+
+// Sums call sum some columns. bean's non-empty fields are conditions.
+func (session *Session) Sums(bean interface{}, columnNames ...string) ([]float64, error) {
+	defer session.resetStatement()
+	if session.IsAutoClose {
+		defer session.Close()
+	}
+
+	var sqlStr string
+	var args []interface{}
+	if len(session.Statement.RawSQL) == 0 {
+		sqlStr, args = session.Statement.genSumSQL(bean, columnNames...)
+	} else {
+		sqlStr = session.Statement.RawSQL
+		args = session.Statement.RawParams
+	}
+
+	session.queryPreprocess(&sqlStr, args...)
+
+	var err error
+	var res = make([]float64, len(columnNames), len(columnNames))
+	if session.IsAutoCommit {
+		err = session.DB().QueryRow(sqlStr, args...).ScanSlice(&res)
+	} else {
+		err = session.Tx.QueryRow(sqlStr, args...).ScanSlice(&res)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
+// SumsInt sum specify columns and return as []int64 instead of []float64
+func (session *Session) SumsInt(bean interface{}, columnNames ...string) ([]int64, error) {
+	defer session.resetStatement()
+	if session.IsAutoClose {
+		defer session.Close()
+	}
+
+	var sqlStr string
+	var args []interface{}
+	if len(session.Statement.RawSQL) == 0 {
+		sqlStr, args = session.Statement.genSumSQL(bean, columnNames...)
+	} else {
+		sqlStr = session.Statement.RawSQL
+		args = session.Statement.RawParams
+	}
+
+	session.queryPreprocess(&sqlStr, args...)
+
+	var err error
+	var res = make([]int64, 0, len(columnNames))
+	if session.IsAutoCommit {
+		err = session.DB().QueryRow(sqlStr, args...).ScanSlice(&res)
+	} else {
+		err = session.Tx.QueryRow(sqlStr, args...).ScanSlice(&res)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
+func (session *Session) noCacheFind(sliceValue reflect.Value, sqlStr string, args ...interface{}) error {
+	var rawRows *core.Rows
+	var err error
+
+	session.queryPreprocess(&sqlStr, args...)
+	if session.IsAutoCommit {
+		_, rawRows, err = session.innerQuery(sqlStr, args...)
+	} else {
+		rawRows, err = session.Tx.Query(sqlStr, args...)
+	}
+	if err != nil {
+		return err
+	}
+	defer rawRows.Close()
+
+	fields, err := rawRows.Columns()
+	if err != nil {
+		return err
+	}
+
+	var newElemFunc func() reflect.Value
+	sliceElementType := sliceValue.Type().Elem()
+	if sliceElementType.Kind() == reflect.Ptr {
+		newElemFunc = func() reflect.Value {
+			return reflect.New(sliceElementType.Elem())
+		}
+	} else {
+		newElemFunc = func() reflect.Value {
+			return reflect.New(sliceElementType)
+		}
+	}
+
+	var sliceValueSetFunc func(*reflect.Value)
+
+	if sliceValue.Kind() == reflect.Slice {
+		if sliceElementType.Kind() == reflect.Ptr {
+			sliceValueSetFunc = func(newValue *reflect.Value) {
+				sliceValue.Set(reflect.Append(sliceValue, reflect.ValueOf(newValue.Interface())))
+			}
+		} else {
+			sliceValueSetFunc = func(newValue *reflect.Value) {
+				sliceValue.Set(reflect.Append(sliceValue, reflect.Indirect(reflect.ValueOf(newValue.Interface()))))
+			}
+		}
+	}
+
+	var newValue = newElemFunc()
+	dataStruct := rValue(newValue.Interface())
+	if dataStruct.Kind() != reflect.Struct {
+		return errors.New("Expected a pointer to a struct")
+	}
+
+	return session.rows2Beans(rawRows, fields, len(fields), session.Engine.autoMapType(dataStruct), newElemFunc, sliceValueSetFunc)
 }
 
 // Find retrieve records from table, condiBeans's non-empty fields
@@ -1189,47 +1292,57 @@ func (session *Session) Find(rowsSlicePtr interface{}, condiBean ...interface{})
 	}
 
 	sliceElementType := sliceValue.Type().Elem()
-	var table *core.Table
+
 	if session.Statement.RefTable == nil {
 		if sliceElementType.Kind() == reflect.Ptr {
 			if sliceElementType.Elem().Kind() == reflect.Struct {
 				pv := reflect.New(sliceElementType.Elem())
-				table = session.Engine.autoMapType(pv.Elem())
+				session.Statement.setRefValue(pv.Elem())
 			} else {
 				return errors.New("slice type")
 			}
 		} else if sliceElementType.Kind() == reflect.Struct {
 			pv := reflect.New(sliceElementType)
-			table = session.Engine.autoMapType(pv.Elem())
+			session.Statement.setRefValue(pv.Elem())
 		} else {
 			return errors.New("slice type")
 		}
-		session.Statement.RefTable = table
-	} else {
-		table = session.Statement.RefTable
 	}
 
-	if len(condiBean) > 0 {
-		var addedTableName = (len(session.Statement.JoinStr) > 0)
-		colNames, args := buildConditions(session.Engine, table, condiBean[0], true, true,
-			false, true, session.Statement.allUseBool, session.Statement.useAllCols,
-			session.Statement.unscoped, session.Statement.mustColumnMap,
-			session.Statement.TableName(), addedTableName)
-		session.Statement.ConditionStr = strings.Join(colNames, " AND ")
-		session.Statement.BeanArgs = args
+	var table = session.Statement.RefTable
+
+	var addedTableName = (len(session.Statement.JoinStr) > 0)
+	var autoCond builder.Cond
+	if !session.Statement.noAutoCondition && len(condiBean) > 0 {
+		var err error
+		autoCond, err = session.Statement.buildConds(table, condiBean[0], true, true, false, true, addedTableName)
+		if err != nil {
+			panic(err)
+		}
 	} else {
 		// !oinume! Add "<col> IS NULL" to WHERE whatever condiBean is given.
 		// See https://github.com/go-xorm/xorm/issues/179
 		if col := table.DeletedColumn(); col != nil && !session.Statement.unscoped { // tag "deleted" is enabled
-			session.Statement.ConditionStr = fmt.Sprintf("(%v IS NULL or %v = '0001-01-01 00:00:00') ",
-				session.Engine.Quote(col.Name), session.Engine.Quote(col.Name))
+			var colName = session.Engine.Quote(col.Name)
+			if addedTableName {
+				var nm = session.Statement.TableName()
+				if len(session.Statement.TableAlias) > 0 {
+					nm = session.Statement.TableAlias
+				}
+				colName = session.Engine.Quote(nm) + "." + colName
+			}
+			autoCond = builder.IsNull{colName}.Or(builder.Eq{colName: "0001-01-01 00:00:00"})
 		}
 	}
 
 	var sqlStr string
 	var args []interface{}
 	if session.Statement.RawSQL == "" {
-		var columnStr string = session.Statement.ColumnStr
+		if len(session.Statement.TableName()) <= 0 {
+			return ErrTableNotFound
+		}
+
+		var columnStr = session.Statement.ColumnStr
 		if len(session.Statement.selectStr) > 0 {
 			columnStr = session.Statement.selectStr
 		} else {
@@ -1252,10 +1365,10 @@ func (session *Session) Find(rowsSlicePtr interface{}, condiBean ...interface{})
 			}
 		}
 
-		session.Statement.attachInSql()
+		condSQL, condArgs, _ := builder.ToSQL(session.Statement.cond.And(autoCond))
 
-		sqlStr = session.Statement.genSelectSql(columnStr)
-		args = append(session.Statement.Params, session.Statement.BeanArgs...)
+		args = append(session.Statement.joinArgs, condArgs...)
+		sqlStr = session.Statement.genSelectSQL(columnStr, condSQL)
 		// for mssql and use limit
 		qs := strings.Count(sqlStr, "?")
 		if len(args)*2 == qs {
@@ -1267,9 +1380,8 @@ func (session *Session) Find(rowsSlicePtr interface{}, condiBean ...interface{})
 	}
 
 	var err error
-	if session.Statement.JoinStr == "" {
+	if session.canCache() {
 		if cacher := session.Engine.getCacher2(table); cacher != nil &&
-			session.Statement.UseCache &&
 			!session.Statement.IsDistinct &&
 			!session.Statement.unscoped {
 			err = session.cacheFind(sliceElementType, sqlStr, rowsSlicePtr, args...)
@@ -1277,137 +1389,66 @@ func (session *Session) Find(rowsSlicePtr interface{}, condiBean ...interface{})
 				return err
 			}
 			err = nil // !nashtsai! reset err to nil for ErrCacheFailed
-			session.Engine.LogWarn("Cache Find Failed")
+			session.Engine.logger.Warn("Cache Find Failed")
 		}
 	}
 
 	if sliceValue.Kind() != reflect.Map {
-		var rawRows *core.Rows
-		var stmt *core.Stmt
+		return session.noCacheFind(sliceValue, sqlStr, args...)
+	}
 
-		session.queryPreprocess(&sqlStr, args...)
+	resultsSlice, err := session.query(sqlStr, args...)
+	if err != nil {
+		return err
+	}
 
-		if session.IsAutoCommit {
-			stmt, err = session.doPrepare(sqlStr)
-			if err != nil {
-				return err
-			}
-			rawRows, err = stmt.Query(args...)
-		} else {
-			rawRows, err = session.Tx.Query(sqlStr, args...)
-		}
-		if err != nil {
-			return err
-		}
-		defer rawRows.Close()
+	keyType := sliceValue.Type().Key()
 
-		fields, err := rawRows.Columns()
-		if err != nil {
-			return err
-		}
-
-		fieldsCount := len(fields)
-
-		var newElemFunc func() reflect.Value
+	for _, results := range resultsSlice {
+		var newValue reflect.Value
 		if sliceElementType.Kind() == reflect.Ptr {
-			newElemFunc = func() reflect.Value {
-				return reflect.New(sliceElementType.Elem())
-			}
+			newValue = reflect.New(sliceElementType.Elem())
 		} else {
-			newElemFunc = func() reflect.Value {
-				return reflect.New(sliceElementType)
-			}
+			newValue = reflect.New(sliceElementType)
 		}
-
-		var sliceValueSetFunc func(*reflect.Value)
-
-		if sliceValue.Kind() == reflect.Slice {
-			if sliceElementType.Kind() == reflect.Ptr {
-				sliceValueSetFunc = func(newValue *reflect.Value) {
-					sliceValue.Set(reflect.Append(sliceValue, reflect.ValueOf(newValue.Interface())))
-				}
-			} else {
-				sliceValueSetFunc = func(newValue *reflect.Value) {
-					sliceValue.Set(reflect.Append(sliceValue, reflect.Indirect(reflect.ValueOf(newValue.Interface()))))
-				}
-			}
-		}
-
-		var newValue reflect.Value = newElemFunc()
-		dataStruct := rValue(newValue.Interface())
-		if dataStruct.Kind() != reflect.Struct {
-			return errors.New("Expected a pointer to a struct")
-		}
-
-		table := session.Engine.autoMapType(dataStruct)
-		return session.rows2Beans(rawRows, fields, fieldsCount, table, newElemFunc, sliceValueSetFunc)
-	} else {
-		resultsSlice, err := session.query(sqlStr, args...)
+		err := session.scanMapIntoStruct(newValue.Interface(), results)
 		if err != nil {
 			return err
 		}
-
-		keyType := sliceValue.Type().Key()
-
-		for _, results := range resultsSlice {
-			var newValue reflect.Value
-			if sliceElementType.Kind() == reflect.Ptr {
-				newValue = reflect.New(sliceElementType.Elem())
-			} else {
-				newValue = reflect.New(sliceElementType)
-			}
-			err := session.scanMapIntoStruct(newValue.Interface(), results)
+		var key interface{}
+		// if there is only one pk, we can put the id as map key.
+		if len(table.PrimaryKeys) == 1 {
+			key, err = str2PK(string(results[table.PrimaryKeys[0]]), keyType)
 			if err != nil {
 				return err
 			}
-			var key interface{}
-			// if there is only one pk, we can put the id as map key.
-			if len(table.PrimaryKeys) == 1 {
-				key, err = Atot(string(results[table.PrimaryKeys[0]]), keyType)
-				if err != nil {
-					return err
-				}
+		} else {
+			if keyType.Kind() != reflect.Slice {
+				panic("don't support multiple primary key's map has non-slice key type")
 			} else {
-				if keyType.Kind() != reflect.Slice {
-					panic("don't support multiple primary key's map has non-slice key type")
-				} else {
-					keys := core.PK{}
-					for _, pk := range table.PrimaryKeys {
-						skey, err := Atot(string(results[pk]), keyType)
-						if err != nil {
-							return err
-						}
-						keys = append(keys, skey)
+				var keys core.PK = make([]interface{}, 0, len(table.PrimaryKeys))
+				for _, pk := range table.PrimaryKeys {
+					skey, err := str2PK(string(results[pk]), keyType)
+					if err != nil {
+						return err
 					}
-					key = keys
+					keys = append(keys, skey)
 				}
+				key = keys
 			}
+		}
 
-			if sliceElementType.Kind() == reflect.Ptr {
-				sliceValue.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(newValue.Interface()))
-			} else {
-				sliceValue.SetMapIndex(reflect.ValueOf(key), reflect.Indirect(reflect.ValueOf(newValue.Interface())))
-			}
+		if sliceElementType.Kind() == reflect.Ptr {
+			sliceValue.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(newValue.Interface()))
+		} else {
+			sliceValue.SetMapIndex(reflect.ValueOf(key), reflect.Indirect(reflect.ValueOf(newValue.Interface())))
 		}
 	}
+
 	return nil
 }
 
-// func (session *Session) queryRows(rawStmt **sql.Stmt, rawRows **sql.Rows, sqlStr string, args ...interface{}) error {
-// 	var err error
-// 	if session.IsAutoCommit {
-// 		*rawStmt, err = session.doPrepare(sqlStr)
-// 		if err != nil {
-// 			return err
-// 		}
-// 		*rawRows, err = (*rawStmt).Query(args...)
-// 	} else {
-// 		*rawRows, err = session.Tx.Query(sqlStr, args...)
-// 	}
-// 	return err
-// }
-
-// Test if database is ok
+// Ping test if database is ok
 func (session *Session) Ping() error {
 	defer session.resetStatement()
 	if session.IsAutoClose {
@@ -1417,29 +1458,7 @@ func (session *Session) Ping() error {
 	return session.DB().Ping()
 }
 
-/*
-func (session *Session) isColumnExist(tableName string, col *core.Column) (bool, error) {
-	defer session.resetStatement()
-	if session.IsAutoClose {
-		defer session.Close()
-	}
-	return session.Engine.dialect.IsColumnExist(tableName, col)
-	//sqlStr, args := session.Engine.dialect.ColumnCheckSql(tableName, colName)
-	//results, err := session.query(sqlStr, args...)
-	//return len(results) > 0, err
-}*/
-
-func (engine *Engine) tableName(beanOrTableName interface{}) (string, error) {
-	v := rValue(beanOrTableName)
-	if v.Type().Kind() == reflect.String {
-		return beanOrTableName.(string), nil
-	} else if v.Type().Kind() == reflect.Struct {
-		table := engine.autoMapType(v)
-		return table.Name, nil
-	}
-	return "", errors.New("bean should be a struct or struct's point")
-}
-
+// IsTableExist if a table is exist
 func (session *Session) IsTableExist(beanOrTableName interface{}) (bool, error) {
 	tableName, err := session.Engine.tableName(beanOrTableName)
 	if err != nil {
@@ -1459,6 +1478,7 @@ func (session *Session) isTableExist(tableName string) (bool, error) {
 	return len(results) > 0, err
 }
 
+// IsTableEmpty if table have any records
 func (session *Session) IsTableEmpty(bean interface{}) (bool, error) {
 	v := rValue(bean)
 	t := v.Type()
@@ -1466,7 +1486,6 @@ func (session *Session) IsTableEmpty(bean interface{}) (bool, error) {
 	if t.Kind() == reflect.String {
 		return session.isTableEmpty(bean.(string))
 	} else if t.Kind() == reflect.Struct {
-		session.Engine.autoMapType(v)
 		rows, err := session.Count(bean)
 		return rows == 0, err
 	}
@@ -1522,9 +1541,8 @@ func (session *Session) isIndexExist2(tableName string, cols []string, unique bo
 		if sliceEq(index.Cols, cols) {
 			if unique {
 				return index.Type == core.UniqueType, nil
-			} else {
-				return index.Type == core.IndexType, nil
 			}
+			return index.Type == core.IndexType, nil
 		}
 	}
 	return false, nil
@@ -1587,32 +1605,31 @@ func (session *Session) dropAll() error {
 func (session *Session) getField(dataStruct *reflect.Value, key string, table *core.Table, idx int) *reflect.Value {
 	var col *core.Column
 	if col = table.GetColumnIdx(key, idx); col == nil {
-		session.Engine.LogWarn(fmt.Sprintf("table %v's has not column %v. %v", table.Name, key, table.Columns()))
+		//session.Engine.logger.Warnf("table %v has no column %v. %v", table.Name, key, table.ColumnsSeq())
 		return nil
 	}
 
 	fieldValue, err := col.ValueOfV(dataStruct)
 	if err != nil {
-		session.Engine.LogError(err)
+		session.Engine.logger.Error(err)
 		return nil
 	}
 
 	if !fieldValue.IsValid() || !fieldValue.CanSet() {
-		session.Engine.LogWarn("table %v's column %v is not valid or cannot set",
-			table.Name, key)
+		session.Engine.logger.Warnf("table %v's column %v is not valid or cannot set", table.Name, key)
 		return nil
 	}
 	return fieldValue
 }
 
+// Cell cell is a result of one column field
 type Cell *interface{}
 
 func (session *Session) rows2Beans(rows *core.Rows, fields []string, fieldsCount int,
 	table *core.Table, newElemFunc func() reflect.Value,
 	sliceValueSetFunc func(*reflect.Value)) error {
-
 	for rows.Next() {
-		var newValue reflect.Value = newElemFunc()
+		var newValue = newElemFunc()
 		bean := newValue.Interface()
 		dataStruct := rValue(bean)
 		err := session._row2Bean(rows, fields, fieldsCount, bean, &dataStruct, table)
@@ -1620,7 +1637,6 @@ func (session *Session) rows2Beans(rows *core.Rows, fields []string, fieldsCount
 			return err
 		}
 		sliceValueSetFunc(&newValue)
-
 	}
 	return nil
 }
@@ -1631,8 +1647,9 @@ func (session *Session) row2Bean(rows *core.Rows, fields []string, fieldsCount i
 		return errors.New("Expected a pointer to a struct")
 	}
 
-	table := session.Engine.autoMapType(dataStruct)
-	return session._row2Bean(rows, fields, fieldsCount, bean, &dataStruct, table)
+	session.Statement.setRefValue(dataStruct)
+
+	return session._row2Bean(rows, fields, fieldsCount, bean, &dataStruct, session.Statement.RefTable)
 }
 
 func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount int, bean interface{}, dataStruct *reflect.Value, table *core.Table) error {
@@ -1663,17 +1680,18 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 	for ii, key := range fields {
 		var idx int
 		var ok bool
-		if idx, ok = tempMap[strings.ToLower(key)]; !ok {
+		var lKey = strings.ToLower(key)
+		if idx, ok = tempMap[lKey]; !ok {
 			idx = 0
 		} else {
 			idx = idx + 1
 		}
-		tempMap[strings.ToLower(key)] = idx
+		tempMap[lKey] = idx
 
 		if fieldValue := session.getField(dataStruct, key, table, idx); fieldValue != nil {
 			rawValue := reflect.Indirect(reflect.ValueOf(scanResults[ii]))
 
-			//if row is null then ignore
+			// if row is null then ignore
 			if rawValue.Interface() == nil {
 				continue
 			}
@@ -1683,7 +1701,7 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 					if data, err := value2Bytes(&rawValue); err == nil {
 						structConvert.FromDB(data)
 					} else {
-						session.Engine.LogError(err)
+						session.Engine.logger.Error(err)
 					}
 					continue
 				}
@@ -1696,7 +1714,7 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 					}
 					fieldValue.Interface().(core.Conversion).FromDB(data)
 				} else {
-					session.Engine.LogError(err)
+					session.Engine.logger.Error(err)
 				}
 				continue
 			}
@@ -1706,27 +1724,68 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 
 			fieldType := fieldValue.Type()
 			hasAssigned := false
+			col := table.GetColumnIdx(key, idx)
+
+			if col.SQLType.IsJson() {
+				var bs []byte
+				if rawValueType.Kind() == reflect.String {
+					bs = []byte(vv.String())
+				} else if rawValueType.ConvertibleTo(core.BytesType) {
+					bs = vv.Bytes()
+				} else {
+					return fmt.Errorf("unsupported database data type: %s %v", key, rawValueType.Kind())
+				}
+
+				hasAssigned = true
+
+				if len(bs) > 0 {
+					if fieldValue.CanAddr() {
+						err := json.Unmarshal(bs, fieldValue.Addr().Interface())
+						if err != nil {
+							session.Engine.logger.Error(key, err)
+							return err
+						}
+					} else {
+						x := reflect.New(fieldType)
+						err := json.Unmarshal(bs, x.Interface())
+						if err != nil {
+							session.Engine.logger.Error(key, err)
+							return err
+						}
+						fieldValue.Set(x.Elem())
+					}
+				}
+
+				continue
+			}
 
 			switch fieldType.Kind() {
 			case reflect.Complex64, reflect.Complex128:
+				// TODO: reimplement this
+				var bs []byte
 				if rawValueType.Kind() == reflect.String {
-					hasAssigned = true
-					x := reflect.New(fieldType)
-					err := json.Unmarshal([]byte(vv.String()), x.Interface())
-					if err != nil {
-						session.Engine.LogError(err)
-						return err
+					bs = []byte(vv.String())
+				} else if rawValueType.ConvertibleTo(core.BytesType) {
+					bs = vv.Bytes()
+				}
+
+				hasAssigned = true
+				if len(bs) > 0 {
+					if fieldValue.CanAddr() {
+						err := json.Unmarshal(bs, fieldValue.Addr().Interface())
+						if err != nil {
+							session.Engine.logger.Error(err)
+							return err
+						}
+					} else {
+						x := reflect.New(fieldType)
+						err := json.Unmarshal(bs, x.Interface())
+						if err != nil {
+							session.Engine.logger.Error(err)
+							return err
+						}
+						fieldValue.Set(x.Elem())
 					}
-					fieldValue.Set(x.Elem())
-				} else if rawValueType.Kind() == reflect.Slice {
-					hasAssigned = true
-					x := reflect.New(fieldType)
-					err := json.Unmarshal(vv.Bytes(), x.Interface())
-					if err != nil {
-						session.Engine.LogError(err)
-						return err
-					}
-					fieldValue.Set(x.Elem())
 				}
 			case reflect.Slice, reflect.Array:
 				switch rawValueType.Kind() {
@@ -1771,7 +1830,6 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 					fieldValue.SetUint(uint64(vv.Int()))
 				}
 			case reflect.Struct:
-				col := table.GetColumn(key)
 				if fieldType.ConvertibleTo(core.TimeType) {
 					if rawValueType == core.TimeType {
 						hasAssigned = true
@@ -1779,12 +1837,20 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 						t := vv.Convert(core.TimeType).Interface().(time.Time)
 						z, _ := t.Zone()
 						if len(z) == 0 || t.Year() == 0 { // !nashtsai! HACK tmp work around for lib/pq doesn't properly time with location
-							session.Engine.LogDebugf("empty zone key[%v] : %v | zone: %v | location: %+v\n", key, t, z, *t.Location())
+							dbTZ := session.Engine.DatabaseTZ
+							if dbTZ == nil {
+								dbTZ = time.Local
+							}
+							session.Engine.logger.Debugf("empty zone key[%v] : %v | zone: %v | location: %+v\n", key, t, z, *t.Location())
 							t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(),
-								t.Minute(), t.Second(), t.Nanosecond(), time.Local)
+								t.Minute(), t.Second(), t.Nanosecond(), dbTZ)
 						}
 						// !nashtsai! convert to engine location
-						t = t.In(session.Engine.TZLocation)
+						if col.TimeZone == nil {
+							t = t.In(session.Engine.TZLocation)
+						} else {
+							t = t.In(col.TimeZone)
+						}
 						fieldValue.Set(reflect.ValueOf(t).Convert(fieldType))
 
 						// t = fieldValue.Interface().(time.Time)
@@ -1793,41 +1859,73 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 					} else if rawValueType == core.IntType || rawValueType == core.Int64Type ||
 						rawValueType == core.Int32Type {
 						hasAssigned = true
-						t := time.Unix(vv.Int(), 0).In(session.Engine.TZLocation)
-						vv = reflect.ValueOf(t)
-						fieldValue.Set(vv)
+						var tz *time.Location
+						if col.TimeZone == nil {
+							tz = session.Engine.TZLocation
+						} else {
+							tz = col.TimeZone
+						}
+						t := time.Unix(vv.Int(), 0).In(tz)
+						//vv = reflect.ValueOf(t)
+						fieldValue.Set(reflect.ValueOf(t).Convert(fieldType))
+					} else {
+						if d, ok := vv.Interface().([]uint8); ok {
+							hasAssigned = true
+							t, err := session.byte2Time(col, d)
+							if err != nil {
+								session.Engine.logger.Error("byte2Time error:", err.Error())
+								hasAssigned = false
+							} else {
+								fieldValue.Set(reflect.ValueOf(t).Convert(fieldType))
+							}
+						} else if d, ok := vv.Interface().(string); ok {
+							hasAssigned = true
+							t, err := session.str2Time(col, d)
+							if err != nil {
+								session.Engine.logger.Error("byte2Time error:", err.Error())
+								hasAssigned = false
+							} else {
+								fieldValue.Set(reflect.ValueOf(t).Convert(fieldType))
+							}
+						} else {
+							panic(fmt.Sprintf("rawValueType is %v, value is %v", rawValueType, vv.Interface()))
+						}
 					}
 				} else if nulVal, ok := fieldValue.Addr().Interface().(sql.Scanner); ok {
 					// !<winxxp>! 增加支持sql.Scanner接口的结构，如sql.NullString
 					hasAssigned = true
 					if err := nulVal.Scan(vv.Interface()); err != nil {
-						//fmt.Println("sql.Sanner error:", err.Error())
-						session.Engine.LogError("sql.Sanner error:", err.Error())
+						session.Engine.logger.Error("sql.Sanner error:", err.Error())
 						hasAssigned = false
 					}
 				} else if col.SQLType.IsJson() {
 					if rawValueType.Kind() == reflect.String {
 						hasAssigned = true
 						x := reflect.New(fieldType)
-						err := json.Unmarshal([]byte(vv.String()), x.Interface())
-						if err != nil {
-							session.Engine.LogError(err)
-							return err
+						if len([]byte(vv.String())) > 0 {
+							err := json.Unmarshal([]byte(vv.String()), x.Interface())
+							if err != nil {
+								session.Engine.logger.Error(err)
+								return err
+							}
+							fieldValue.Set(x.Elem())
 						}
-						fieldValue.Set(x.Elem())
 					} else if rawValueType.Kind() == reflect.Slice {
 						hasAssigned = true
 						x := reflect.New(fieldType)
-						err := json.Unmarshal(vv.Bytes(), x.Interface())
-						if err != nil {
-							session.Engine.LogError(err)
-							return err
+						if len(vv.Bytes()) > 0 {
+							err := json.Unmarshal(vv.Bytes(), x.Interface())
+							if err != nil {
+								session.Engine.logger.Error(err)
+								return err
+							}
+							fieldValue.Set(x.Elem())
 						}
-						fieldValue.Set(x.Elem())
 					}
 				} else if session.Statement.UseCascade {
 					table := session.Engine.autoMapType(*fieldValue)
 					if table != nil {
+						hasAssigned = true
 						if len(table.PrimaryKeys) != 1 {
 							panic("unsupported non or composited primary key cascade")
 						}
@@ -1856,8 +1954,10 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 							pk[0] = uint8(vv.Uint())
 						case reflect.String:
 							pk[0] = vv.String()
+						case reflect.Slice:
+							pk[0], _ = strconv.ParseInt(string(rawValue.Interface().([]byte)), 10, 64)
 						default:
-							panic("unsupported primary key type cascade")
+							panic(fmt.Sprintf("unsupported primary key type: %v, %v", rawValueType, fieldValue))
 						}
 
 						if !isPKZero(pk) {
@@ -1867,19 +1967,20 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 							structInter := reflect.New(fieldValue.Type())
 							newsession := session.Engine.NewSession()
 							defer newsession.Close()
-							has, err := newsession.Id(pk).Cascade().Get(structInter.Interface())  // FIXME NoCascade
+							has, err := newsession.Id(pk).NoCascade().Get(structInter.Interface())
 							if err != nil {
 								return err
 							}
 							if has {
-								v := structInter.Elem().Interface()
-								fieldValue.Set(reflect.ValueOf(v))
+								//v := structInter.Elem().Interface()
+								//fieldValue.Set(reflect.ValueOf(v))
+								fieldValue.Set(structInter.Elem())
 							} else {
-								return errors.New("cascade obj is not exist!")
+								return errors.New("cascade obj is not exist")
 							}
 						}
 					} else {
-						session.Engine.LogError("unsupported struct type in Scan: ", fieldValue.Type().String())
+						session.Engine.logger.Error("unsupported struct type in Scan: ", fieldValue.Type().String())
 					}
 				}
 			case reflect.Ptr:
@@ -1902,7 +2003,7 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 				case core.PtrTimeType:
 					if rawValueType == core.PtrTimeType {
 						hasAssigned = true
-						var x time.Time = rawValue.Interface().(time.Time)
+						var x = rawValue.Interface().(time.Time)
 						fieldValue.Set(reflect.ValueOf(&x))
 					}
 				case core.PtrFloat64Type:
@@ -1913,7 +2014,7 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 					}
 				case core.PtrUint64Type:
 					if rawValueType.Kind() == reflect.Int64 {
-						var x uint64 = uint64(vv.Int())
+						var x = uint64(vv.Int())
 						hasAssigned = true
 						fieldValue.Set(reflect.ValueOf(&x))
 					}
@@ -1925,74 +2026,78 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 					}
 				case core.PtrFloat32Type:
 					if rawValueType.Kind() == reflect.Float64 {
-						var x float32 = float32(vv.Float())
+						var x = float32(vv.Float())
 						hasAssigned = true
 						fieldValue.Set(reflect.ValueOf(&x))
 					}
 				case core.PtrIntType:
 					if rawValueType.Kind() == reflect.Int64 {
-						var x int = int(vv.Int())
+						var x = int(vv.Int())
 						hasAssigned = true
 						fieldValue.Set(reflect.ValueOf(&x))
 					}
 				case core.PtrInt32Type:
 					if rawValueType.Kind() == reflect.Int64 {
-						var x int32 = int32(vv.Int())
+						var x = int32(vv.Int())
 						hasAssigned = true
 						fieldValue.Set(reflect.ValueOf(&x))
 					}
 				case core.PtrInt8Type:
 					if rawValueType.Kind() == reflect.Int64 {
-						var x int8 = int8(vv.Int())
+						var x = int8(vv.Int())
 						hasAssigned = true
 						fieldValue.Set(reflect.ValueOf(&x))
 					}
 				case core.PtrInt16Type:
 					if rawValueType.Kind() == reflect.Int64 {
-						var x int16 = int16(vv.Int())
+						var x = int16(vv.Int())
 						hasAssigned = true
 						fieldValue.Set(reflect.ValueOf(&x))
 					}
 				case core.PtrUintType:
 					if rawValueType.Kind() == reflect.Int64 {
-						var x uint = uint(vv.Int())
+						var x = uint(vv.Int())
 						hasAssigned = true
 						fieldValue.Set(reflect.ValueOf(&x))
 					}
 				case core.PtrUint32Type:
 					if rawValueType.Kind() == reflect.Int64 {
-						var x uint32 = uint32(vv.Int())
+						var x = uint32(vv.Int())
 						hasAssigned = true
 						fieldValue.Set(reflect.ValueOf(&x))
 					}
 				case core.Uint8Type:
 					if rawValueType.Kind() == reflect.Int64 {
-						var x uint8 = uint8(vv.Int())
+						var x = uint8(vv.Int())
 						hasAssigned = true
 						fieldValue.Set(reflect.ValueOf(&x))
 					}
 				case core.Uint16Type:
 					if rawValueType.Kind() == reflect.Int64 {
-						var x uint16 = uint16(vv.Int())
+						var x = uint16(vv.Int())
 						hasAssigned = true
 						fieldValue.Set(reflect.ValueOf(&x))
 					}
 				case core.Complex64Type:
 					var x complex64
-					err := json.Unmarshal([]byte(vv.String()), &x)
-					if err != nil {
-						session.Engine.LogError(err)
-					} else {
-						fieldValue.Set(reflect.ValueOf(&x))
+					if len([]byte(vv.String())) > 0 {
+						err := json.Unmarshal([]byte(vv.String()), &x)
+						if err != nil {
+							session.Engine.logger.Error(err)
+						} else {
+							fieldValue.Set(reflect.ValueOf(&x))
+						}
 					}
 					hasAssigned = true
 				case core.Complex128Type:
 					var x complex128
-					err := json.Unmarshal([]byte(vv.String()), &x)
-					if err != nil {
-						session.Engine.LogError(err)
-					} else {
-						fieldValue.Set(reflect.ValueOf(&x))
+					if len([]byte(vv.String())) > 0 {
+						err := json.Unmarshal([]byte(vv.String()), &x)
+						if err != nil {
+							session.Engine.logger.Error(err)
+						} else {
+							fieldValue.Set(reflect.ValueOf(&x))
+						}
 					}
 					hasAssigned = true
 				} // switch fieldType
@@ -2004,9 +2109,9 @@ func (session *Session) _row2Bean(rows *core.Rows, fields []string, fieldsCount 
 			if !hasAssigned {
 				data, err := value2Bytes(&rawValue)
 				if err == nil {
-					session.bytes2Value(table.GetColumn(key), fieldValue, data)
+					session.bytes2Value(col, fieldValue, data)
 				} else {
-					session.Engine.LogError(err.Error())
+					session.Engine.logger.Error(err.Error())
 				}
 			}
 		}
@@ -2028,7 +2133,7 @@ func (session *Session) query(sqlStr string, paramStr ...interface{}) (resultsSl
 	session.queryPreprocess(&sqlStr, paramStr...)
 
 	if session.IsAutoCommit {
-		return session.innerQuery(session.DB(), sqlStr, paramStr...)
+		return session.innerQuery2(sqlStr, paramStr...)
 	}
 	return session.txQuery(session.Tx, sqlStr, paramStr...)
 }
@@ -2043,21 +2148,40 @@ func (session *Session) txQuery(tx *core.Tx, sqlStr string, params ...interface{
 	return rows2maps(rows)
 }
 
-func (session *Session) innerQuery(db *core.DB, sqlStr string, params ...interface{}) (resultsSlice []map[string][]byte, err error) {
-	stmt, rows, err := session.Engine.LogSQLQueryTime(sqlStr, params, func() (*core.Stmt, *core.Rows, error) {
-		stmt, err := db.Prepare(sqlStr)
-		if err != nil {
-			return stmt, nil, err
+func (session *Session) innerQuery(sqlStr string, params ...interface{}) (*core.Stmt, *core.Rows, error) {
+	var callback func() (*core.Stmt, *core.Rows, error)
+	if session.prepareStmt {
+		callback = func() (*core.Stmt, *core.Rows, error) {
+			stmt, err := session.doPrepare(sqlStr)
+			if err != nil {
+				return nil, nil, err
+			}
+			rows, err := stmt.Query(params...)
+			if err != nil {
+				return nil, nil, err
+			}
+			return stmt, rows, nil
 		}
-		rows, err := stmt.Query(params...)
+	} else {
+		callback = func() (*core.Stmt, *core.Rows, error) {
+			rows, err := session.DB().Query(sqlStr, params...)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, rows, err
+		}
+	}
+	stmt, rows, err := session.Engine.logSQLQueryTime(sqlStr, params, callback)
+	if err != nil {
+		return nil, nil, err
+	}
+	return stmt, rows, nil
+}
 
-		return stmt, rows, err
-	})
+func (session *Session) innerQuery2(sqlStr string, params ...interface{}) ([]map[string][]byte, error) {
+	_, rows, err := session.innerQuery(sqlStr, params...)
 	if rows != nil {
 		defer rows.Close()
-	}
-	if stmt != nil {
-		defer stmt.Close()
 	}
 	if err != nil {
 		return nil, err
@@ -2065,7 +2189,7 @@ func (session *Session) innerQuery(db *core.DB, sqlStr string, params ...interfa
 	return rows2maps(rows)
 }
 
-// Exec a raw sql and return records as []map[string][]byte
+// Query a raw sql and return records as []map[string][]byte
 func (session *Session) Query(sqlStr string, paramStr ...interface{}) (resultsSlice []map[string][]byte, err error) {
 	defer session.resetStatement()
 	if session.IsAutoClose {
@@ -2087,11 +2211,11 @@ func (session *Session) query2(sqlStr string, paramStr ...interface{}) (resultsS
 	return txQuery2(session.Tx, sqlStr, paramStr...)
 }
 
-// insert one or more beans
+// Insert insert one or more beans
 func (session *Session) Insert(beans ...interface{}) (int64, error) {
-	var affected int64 = 0
+	var affected int64
 	var err error
-	defer session.resetStatement()
+
 	if session.IsAutoClose {
 		defer session.Close()
 	}
@@ -2103,6 +2227,7 @@ func (session *Session) Insert(beans ...interface{}) (int64, error) {
 			if size > 0 {
 				if session.Engine.SupportInsertMany() {
 					cnt, err := session.innerInsertMulti(bean)
+					session.resetStatement()
 					if err != nil {
 						return affected, err
 					}
@@ -2110,6 +2235,7 @@ func (session *Session) Insert(beans ...interface{}) (int64, error) {
 				} else {
 					for i := 0; i < size; i++ {
 						cnt, err := session.innerInsert(sliceValue.Index(i).Interface())
+						session.resetStatement()
 						if err != nil {
 							return affected, err
 						}
@@ -2119,6 +2245,7 @@ func (session *Session) Insert(beans ...interface{}) (int64, error) {
 			}
 		} else {
 			cnt, err := session.innerInsert(bean)
+			session.resetStatement()
 			if err != nil {
 				return affected, err
 			}
@@ -2135,23 +2262,29 @@ func (session *Session) innerInsertMulti(rowsSlicePtr interface{}) (int64, error
 		return 0, errors.New("needs a pointer to a slice")
 	}
 
-	bean := sliceValue.Index(0).Interface()
-	elementValue := rValue(bean)
-	//sliceElementType := elementValue.Type()
+	if sliceValue.Len() <= 0 {
+		return 0, errors.New("could not insert a empty slice")
+	}
 
-	table := session.Engine.autoMapType(elementValue)
-	session.Statement.RefTable = table
+	session.Statement.setRefValue(sliceValue.Index(0))
 
+	if len(session.Statement.TableName()) <= 0 {
+		return 0, ErrTableNotFound
+	}
+
+	table := session.Statement.RefTable
 	size := sliceValue.Len()
 
-	colNames := make([]string, 0)
-	colMultiPlaces := make([]string, 0)
-	var args = make([]interface{}, 0)
-	cols := make([]*core.Column, 0)
+	var colNames []string
+	var colMultiPlaces []string
+	var args []interface{}
+	var cols []*core.Column
 
 	for i := 0; i < size; i++ {
-		elemValue := sliceValue.Index(i).Interface()
-		colPlaces := make([]string, 0)
+		v := sliceValue.Index(i)
+		vv := reflect.Indirect(v)
+		elemValue := v.Interface()
+		var colPlaces []string
 
 		// handle BeforeInsertProcessor
 		// !nashtsai! does user expect it's same slice to passed closure when using Before()/After() when insert multi??
@@ -2166,8 +2299,12 @@ func (session *Session) innerInsertMulti(rowsSlicePtr interface{}) (int64, error
 
 		if i == 0 {
 			for _, col := range table.Columns() {
-				fieldValue := reflect.Indirect(reflect.ValueOf(elemValue)).FieldByName(col.FieldName)
-				if col.IsAutoIncrement && fieldValue.Int() == 0 {
+				ptrFieldValue, err := col.ValueOfV(&vv)
+				if err != nil {
+					return 0, err
+				}
+				fieldValue := *ptrFieldValue
+				if col.IsAutoIncrement && isZero(fieldValue.Interface()) {
 					continue
 				}
 				if col.MapType == core.ONLYFROMDB {
@@ -2177,12 +2314,12 @@ func (session *Session) innerInsertMulti(rowsSlicePtr interface{}) (int64, error
 					continue
 				}
 				if session.Statement.ColumnStr != "" {
-					if _, ok := session.Statement.columnMap[col.Name]; !ok {
+					if _, ok := session.Statement.columnMap[strings.ToLower(col.Name)]; !ok {
 						continue
 					}
 				}
 				if session.Statement.OmitStr != "" {
-					if _, ok := session.Statement.columnMap[col.Name]; ok {
+					if _, ok := session.Statement.columnMap[strings.ToLower(col.Name)]; ok {
 						continue
 					}
 				}
@@ -2194,6 +2331,13 @@ func (session *Session) innerInsertMulti(rowsSlicePtr interface{}) (int64, error
 					session.afterClosures = append(session.afterClosures, func(bean interface{}) {
 						col := table.GetColumn(colName)
 						setColumnTime(bean, col, t)
+					})
+				} else if col.IsVersion && session.Statement.checkVersion {
+					args = append(args, 1)
+					var colName = col.Name
+					session.afterClosures = append(session.afterClosures, func(bean interface{}) {
+						col := table.GetColumn(colName)
+						setColumnInt(bean, col, 1)
 					})
 				} else {
 					arg, err := session.value2Interface(col, fieldValue)
@@ -2209,8 +2353,13 @@ func (session *Session) innerInsertMulti(rowsSlicePtr interface{}) (int64, error
 			}
 		} else {
 			for _, col := range cols {
-				fieldValue := reflect.Indirect(reflect.ValueOf(elemValue)).FieldByName(col.FieldName)
-				if col.IsAutoIncrement && fieldValue.Int() == 0 {
+				ptrFieldValue, err := col.ValueOfV(&vv)
+				if err != nil {
+					return 0, err
+				}
+				fieldValue := *ptrFieldValue
+
+				if col.IsAutoIncrement && isZero(fieldValue.Interface()) {
 					continue
 				}
 				if col.MapType == core.ONLYFROMDB {
@@ -2220,12 +2369,12 @@ func (session *Session) innerInsertMulti(rowsSlicePtr interface{}) (int64, error
 					continue
 				}
 				if session.Statement.ColumnStr != "" {
-					if _, ok := session.Statement.columnMap[col.Name]; !ok {
+					if _, ok := session.Statement.columnMap[strings.ToLower(col.Name)]; !ok {
 						continue
 					}
 				}
 				if session.Statement.OmitStr != "" {
-					if _, ok := session.Statement.columnMap[col.Name]; ok {
+					if _, ok := session.Statement.columnMap[strings.ToLower(col.Name)]; ok {
 						continue
 					}
 				}
@@ -2237,6 +2386,13 @@ func (session *Session) innerInsertMulti(rowsSlicePtr interface{}) (int64, error
 					session.afterClosures = append(session.afterClosures, func(bean interface{}) {
 						col := table.GetColumn(colName)
 						setColumnTime(bean, col, t)
+					})
+				} else if col.IsVersion && session.Statement.checkVersion {
+					args = append(args, 1)
+					var colName = col.Name
+					session.afterClosures = append(session.afterClosures, func(bean interface{}) {
+						col := table.GetColumn(colName)
+						setColumnInt(bean, col, 1)
 					})
 				} else {
 					arg, err := session.value2Interface(col, fieldValue)
@@ -2253,10 +2409,8 @@ func (session *Session) innerInsertMulti(rowsSlicePtr interface{}) (int64, error
 	}
 	cleanupProcessorsClosures(&session.beforeClosures)
 
-	statement := fmt.Sprintf("INSERT INTO %v%v%v (%v%v%v) VALUES (%v)",
-		session.Engine.QuoteStr(),
-		session.Statement.TableName(),
-		session.Engine.QuoteStr(),
+	statement := fmt.Sprintf("INSERT INTO %s (%v%v%v) VALUES (%v)",
+		session.Engine.Quote(session.Statement.TableName()),
 		session.Engine.QuoteStr(),
 		strings.Join(colNames, session.Engine.QuoteStr()+", "+session.Engine.QuoteStr()),
 		session.Engine.QuoteStr(),
@@ -2273,7 +2427,8 @@ func (session *Session) innerInsertMulti(rowsSlicePtr interface{}) (int64, error
 
 	lenAfterClosures := len(session.afterClosures)
 	for i := 0; i < size; i++ {
-		elemValue := sliceValue.Index(i).Interface()
+		elemValue := reflect.Indirect(sliceValue.Index(i)).Addr().Interface()
+
 		// handle AfterInsertProcessor
 		if session.IsAutoCommit {
 			// !nashtsai! does user expect it's same slice to passed closure when using Before()/After() when insert multi??
@@ -2299,30 +2454,33 @@ func (session *Session) innerInsertMulti(rowsSlicePtr interface{}) (int64, error
 			}
 		}
 	}
+
 	cleanupProcessorsClosures(&session.afterClosures)
 	return res.RowsAffected()
 }
 
-// Insert multiple records
+// InsertMulti insert multiple records
 func (session *Session) InsertMulti(rowsSlicePtr interface{}) (int64, error) {
-	sliceValue := reflect.Indirect(reflect.ValueOf(rowsSlicePtr))
-	if sliceValue.Kind() == reflect.Slice {
-		if sliceValue.Len() > 0 {
-			defer session.resetStatement()
-			if session.IsAutoClose {
-				defer session.Close()
-			}
-			return session.innerInsertMulti(rowsSlicePtr)
-		} else {
-			return 0, nil
-		}
-	} else {
-		return 0, ErrParamsType
+	defer session.resetStatement()
+	if session.IsAutoClose {
+		defer session.Close()
 	}
+
+	sliceValue := reflect.Indirect(reflect.ValueOf(rowsSlicePtr))
+	if sliceValue.Kind() != reflect.Slice {
+		return 0, ErrParamsType
+
+	}
+
+	if sliceValue.Len() <= 0 {
+		return 0, nil
+	}
+
+	return session.innerInsertMulti(rowsSlicePtr)
 }
 
-func (session *Session) byte2Time(col *core.Column, data []byte) (outTime time.Time, outErr error) {
-	sdata := strings.TrimSpace(string(data))
+func (session *Session) str2Time(col *core.Column, data string) (outTime time.Time, outErr error) {
+	sdata := strings.TrimSpace(data)
 	var x time.Time
 	var err error
 
@@ -2332,34 +2490,35 @@ func (session *Session) byte2Time(col *core.Column, data []byte) (outTime time.T
 		// time stamp
 		sd, err := strconv.ParseInt(sdata, 10, 64)
 		if err == nil {
-			x = time.Unix(0, sd)
+			x = time.Unix(sd, 0)
 			// !nashtsai! HACK mymysql driver is casuing Local location being change to CHAT and cause wrong time conversion
-			x = x.In(time.UTC)
-			x = time.Date(x.Year(), x.Month(), x.Day(), x.Hour(),
-				x.Minute(), x.Second(), x.Nanosecond(), session.Engine.TZLocation)
-			session.Engine.LogDebugf("time(0) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
+			if col.TimeZone == nil {
+				x = x.In(session.Engine.TZLocation)
+			} else {
+				x = x.In(col.TimeZone)
+			}
+			session.Engine.logger.Debugf("time(0) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
 		} else {
-			session.Engine.LogDebugf("time(0) err key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
+			session.Engine.logger.Debugf("time(0) err key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
 		}
-	} else if len(sdata) > 19 {
-
+	} else if len(sdata) > 19 && strings.Contains(sdata, "-") {
 		x, err = time.ParseInLocation(time.RFC3339Nano, sdata, session.Engine.TZLocation)
-		session.Engine.LogDebugf("time(1) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
+		session.Engine.logger.Debugf("time(1) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
 		if err != nil {
 			x, err = time.ParseInLocation("2006-01-02 15:04:05.999999999", sdata, session.Engine.TZLocation)
-			session.Engine.LogDebugf("time(2) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
+			session.Engine.logger.Debugf("time(2) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
 		}
 		if err != nil {
 			x, err = time.ParseInLocation("2006-01-02 15:04:05.9999999 Z07:00", sdata, session.Engine.TZLocation)
-			session.Engine.LogDebugf("time(3) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
+			session.Engine.logger.Debugf("time(3) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
 		}
 
-	} else if len(sdata) == 19 {
+	} else if len(sdata) == 19 && strings.Contains(sdata, "-") {
 		x, err = time.ParseInLocation("2006-01-02 15:04:05", sdata, session.Engine.TZLocation)
-		session.Engine.LogDebugf("time(4) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
+		session.Engine.logger.Debugf("time(4) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
 	} else if len(sdata) == 10 && sdata[4] == '-' && sdata[7] == '-' {
 		x, err = time.ParseInLocation("2006-01-02", sdata, session.Engine.TZLocation)
-		session.Engine.LogDebugf("time(5) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
+		session.Engine.logger.Debugf("time(5) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
 	} else if col.SQLType.Name == core.Time {
 		if strings.Contains(sdata, " ") {
 			ssd := strings.Split(sdata, " ")
@@ -2373,17 +2532,21 @@ func (session *Session) byte2Time(col *core.Column, data []byte) (outTime time.T
 
 		st := fmt.Sprintf("2006-01-02 %v", sdata)
 		x, err = time.ParseInLocation("2006-01-02 15:04:05", st, session.Engine.TZLocation)
-		session.Engine.LogDebugf("time(6) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
+		session.Engine.logger.Debugf("time(6) key[%v]: %+v | sdata: [%v]\n", col.FieldName, x, sdata)
 	} else {
-		outErr = errors.New(fmt.Sprintf("unsupported time format %v", sdata))
+		outErr = fmt.Errorf("unsupported time format %v", sdata)
 		return
 	}
 	if err != nil {
-		outErr = errors.New(fmt.Sprintf("unsupported time format %v: %v", sdata, err))
+		outErr = fmt.Errorf("unsupported time format %v: %v", sdata, err)
 		return
 	}
 	outTime = x
 	return
+}
+
+func (session *Session) byte2Time(col *core.Column, data []byte) (outTime time.Time, outErr error) {
+	return session.str2Time(col, string(data))
 }
 
 // convert a db data([]byte) to a field value
@@ -2403,36 +2566,41 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 	switch fieldType.Kind() {
 	case reflect.Complex64, reflect.Complex128:
 		x := reflect.New(fieldType)
-
-		err := json.Unmarshal(data, x.Interface())
-		if err != nil {
-			session.Engine.LogError(err)
-			return err
+		if len(data) > 0 {
+			err := json.Unmarshal(data, x.Interface())
+			if err != nil {
+				session.Engine.logger.Error(err)
+				return err
+			}
+			fieldValue.Set(x.Elem())
 		}
-		fieldValue.Set(x.Elem())
 	case reflect.Slice, reflect.Array, reflect.Map:
 		v = data
 		t := fieldType.Elem()
 		k := t.Kind()
 		if col.SQLType.IsText() {
 			x := reflect.New(fieldType)
-			err := json.Unmarshal(data, x.Interface())
-			if err != nil {
-				session.Engine.LogError(err)
-				return err
+			if len(data) > 0 {
+				err := json.Unmarshal(data, x.Interface())
+				if err != nil {
+					session.Engine.logger.Error(err)
+					return err
+				}
+				fieldValue.Set(x.Elem())
 			}
-			fieldValue.Set(x.Elem())
 		} else if col.SQLType.IsBlob() {
 			if k == reflect.Uint8 {
 				fieldValue.Set(reflect.ValueOf(v))
 			} else {
 				x := reflect.New(fieldType)
-				err := json.Unmarshal(data, x.Interface())
-				if err != nil {
-					session.Engine.LogError(err)
-					return err
+				if len(data) > 0 {
+					err := json.Unmarshal(data, x.Interface())
+					if err != nil {
+						session.Engine.logger.Error(err)
+						return err
+					}
+					fieldValue.Set(x.Elem())
 				}
-				fieldValue.Set(x.Elem())
 			}
 		} else {
 			return ErrUnSupportedType
@@ -2503,76 +2671,16 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 			} else if session.Statement.UseCascade {
 				table := session.Engine.autoMapType(*fieldValue)
 				if table != nil {
+					// TODO: current only support 1 primary key
 					if len(table.PrimaryKeys) > 1 {
 						panic("unsupported composited primary key cascade")
 					}
 					var pk = make(core.PK, len(table.PrimaryKeys))
 					rawValueType := table.ColumnType(table.PKColumns()[0].FieldName)
-					switch rawValueType.Kind() {
-					case reflect.Int64:
-						x, err := strconv.ParseInt(string(data), 10, 64)
-						if err != nil {
-							return fmt.Errorf("arg %v as int: %s", key, err.Error())
-						}
-						pk[0] = x
-					case reflect.Int:
-						x, err := strconv.ParseInt(string(data), 10, 64)
-						if err != nil {
-							return fmt.Errorf("arg %v as int: %s", key, err.Error())
-						}
-						pk[0] = int(x)
-					case reflect.Int32:
-						x, err := strconv.ParseInt(string(data), 10, 64)
-						if err != nil {
-							return fmt.Errorf("arg %v as int: %s", key, err.Error())
-						}
-						pk[0] = int32(x)
-					case reflect.Int16:
-						x, err := strconv.ParseInt(string(data), 10, 64)
-						if err != nil {
-							return fmt.Errorf("arg %v as int: %s", key, err.Error())
-						}
-						pk[0] = int16(x)
-					case reflect.Int8:
-						x, err := strconv.ParseInt(string(data), 10, 64)
-						if err != nil {
-							return fmt.Errorf("arg %v as int: %s", key, err.Error())
-						}
-						pk[0] = int8(x)
-					case reflect.Uint64:
-						x, err := strconv.ParseUint(string(data), 10, 64)
-						if err != nil {
-							return fmt.Errorf("arg %v as int: %s", key, err.Error())
-						}
-						pk[0] = x
-					case reflect.Uint:
-						x, err := strconv.ParseUint(string(data), 10, 64)
-						if err != nil {
-							return fmt.Errorf("arg %v as int: %s", key, err.Error())
-						}
-						pk[0] = uint(x)
-					case reflect.Uint32:
-						x, err := strconv.ParseUint(string(data), 10, 64)
-						if err != nil {
-							return fmt.Errorf("arg %v as int: %s", key, err.Error())
-						}
-						pk[0] = uint32(x)
-					case reflect.Uint16:
-						x, err := strconv.ParseUint(string(data), 10, 64)
-						if err != nil {
-							return fmt.Errorf("arg %v as int: %s", key, err.Error())
-						}
-						pk[0] = uint16(x)
-					case reflect.Uint8:
-						x, err := strconv.ParseUint(string(data), 10, 64)
-						if err != nil {
-							return fmt.Errorf("arg %v as int: %s", key, err.Error())
-						}
-						pk[0] = uint8(x)
-					case reflect.String:
-						pk[0] = string(data)
-					default:
-						panic("unsupported primary key type cascade")
+					var err error
+					pk[0], err = str2PK(string(data), rawValueType)
+					if err != nil {
+						return err
 					}
 
 					if !isPKZero(pk) {
@@ -2582,7 +2690,7 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 						structInter := reflect.New(fieldValue.Type())
 						newsession := session.Engine.NewSession()
 						defer newsession.Close()
-						has, err := newsession.Id(pk).Cascade().Get(structInter.Interface())  // FIXME NoCascade
+						has, err := newsession.Id(pk).NoCascade().Get(structInter.Interface())
 						if err != nil {
 							return err
 						}
@@ -2590,7 +2698,7 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 							v = structInter.Elem().Interface()
 							fieldValue.Set(reflect.ValueOf(v))
 						} else {
-							return errors.New("cascade obj is not exist!")
+							return errors.New("cascade obj is not exist")
 						}
 					}
 				} else {
@@ -2601,107 +2709,103 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 	case reflect.Ptr:
 		// !nashtsai! TODO merge duplicated codes above
 		//typeStr := fieldType.String()
-		switch fieldType {
+		switch fieldType.Elem().Kind() {
 		// case "*string":
-		case core.PtrStringType:
+		case core.StringType.Kind():
 			x := string(data)
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*bool":
-		case core.PtrBoolType:
+		case core.BoolType.Kind():
 			d := string(data)
 			v, err := strconv.ParseBool(d)
 			if err != nil {
 				return fmt.Errorf("arg %v as bool: %s", key, err.Error())
 			}
-			fieldValue.Set(reflect.ValueOf(&v))
+			fieldValue.Set(reflect.ValueOf(&v).Convert(fieldType))
 		// case "*complex64":
-		case core.PtrComplex64Type:
+		case core.Complex64Type.Kind():
 			var x complex64
-			err := json.Unmarshal(data, &x)
-			if err != nil {
-				session.Engine.LogError(err)
-				return err
+			if len(data) > 0 {
+				err := json.Unmarshal(data, &x)
+				if err != nil {
+					session.Engine.logger.Error(err)
+					return err
+				}
+				fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 			}
-			fieldValue.Set(reflect.ValueOf(&x))
 		// case "*complex128":
-		case core.PtrComplex128Type:
+		case core.Complex128Type.Kind():
 			var x complex128
-			err := json.Unmarshal(data, &x)
-			if err != nil {
-				session.Engine.LogError(err)
-				return err
+			if len(data) > 0 {
+				err := json.Unmarshal(data, &x)
+				if err != nil {
+					session.Engine.logger.Error(err)
+					return err
+				}
+				fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 			}
-			fieldValue.Set(reflect.ValueOf(&x))
 		// case "*float64":
-		case core.PtrFloat64Type:
+		case core.Float64Type.Kind():
 			x, err := strconv.ParseFloat(string(data), 64)
 			if err != nil {
 				return fmt.Errorf("arg %v as float64: %s", key, err.Error())
 			}
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*float32":
-		case core.PtrFloat32Type:
+		case core.Float32Type.Kind():
 			var x float32
 			x1, err := strconv.ParseFloat(string(data), 32)
 			if err != nil {
 				return fmt.Errorf("arg %v as float32: %s", key, err.Error())
 			}
 			x = float32(x1)
-			fieldValue.Set(reflect.ValueOf(&x))
-		// case "*time.Time":
-		case core.PtrTimeType:
-			x, err := session.byte2Time(col, data)
-			if err != nil {
-				return err
-			}
-			v = x
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*uint64":
-		case core.PtrUint64Type:
+		case core.Uint64Type.Kind():
 			var x uint64
 			x, err := strconv.ParseUint(string(data), 10, 64)
 			if err != nil {
 				return fmt.Errorf("arg %v as int: %s", key, err.Error())
 			}
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*uint":
-		case core.PtrUintType:
+		case core.UintType.Kind():
 			var x uint
 			x1, err := strconv.ParseUint(string(data), 10, 64)
 			if err != nil {
 				return fmt.Errorf("arg %v as int: %s", key, err.Error())
 			}
 			x = uint(x1)
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*uint32":
-		case core.PtrUint32Type:
+		case core.Uint32Type.Kind():
 			var x uint32
 			x1, err := strconv.ParseUint(string(data), 10, 64)
 			if err != nil {
 				return fmt.Errorf("arg %v as int: %s", key, err.Error())
 			}
 			x = uint32(x1)
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*uint8":
-		case core.PtrUint8Type:
+		case core.Uint8Type.Kind():
 			var x uint8
 			x1, err := strconv.ParseUint(string(data), 10, 64)
 			if err != nil {
 				return fmt.Errorf("arg %v as int: %s", key, err.Error())
 			}
 			x = uint8(x1)
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*uint16":
-		case core.PtrUint16Type:
+		case core.Uint16Type.Kind():
 			var x uint16
 			x1, err := strconv.ParseUint(string(data), 10, 64)
 			if err != nil {
 				return fmt.Errorf("arg %v as int: %s", key, err.Error())
 			}
 			x = uint16(x1)
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*int64":
-		case core.PtrInt64Type:
+		case core.Int64Type.Kind():
 			sdata := string(data)
 			var x int64
 			var err error
@@ -2723,9 +2827,9 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 			if err != nil {
 				return fmt.Errorf("arg %v as int: %s", key, err.Error())
 			}
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*int":
-		case core.PtrIntType:
+		case core.IntType.Kind():
 			sdata := string(data)
 			var x int
 			var x1 int64
@@ -2751,9 +2855,9 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 			if err != nil {
 				return fmt.Errorf("arg %v as int: %s", key, err.Error())
 			}
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*int32":
-		case core.PtrInt32Type:
+		case core.Int32Type.Kind():
 			sdata := string(data)
 			var x int32
 			var x1 int64
@@ -2779,9 +2883,9 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 			if err != nil {
 				return fmt.Errorf("arg %v as int: %s", key, err.Error())
 			}
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*int8":
-		case core.PtrInt8Type:
+		case core.Int8Type.Kind():
 			sdata := string(data)
 			var x int8
 			var x1 int64
@@ -2807,9 +2911,9 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 			if err != nil {
 				return fmt.Errorf("arg %v as int: %s", key, err.Error())
 			}
-			fieldValue.Set(reflect.ValueOf(&x))
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
 		// case "*int16":
-		case core.PtrInt16Type:
+		case core.Int16Type.Kind():
 			sdata := string(data)
 			var x int16
 			var x1 int64
@@ -2835,9 +2939,19 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 			if err != nil {
 				return fmt.Errorf("arg %v as int: %s", key, err.Error())
 			}
-			fieldValue.Set(reflect.ValueOf(&x))
-		default:
-			if fieldType.Elem().Kind() == reflect.Struct {
+			fieldValue.Set(reflect.ValueOf(&x).Convert(fieldType))
+		// case "*SomeStruct":
+		case reflect.Struct:
+			switch fieldType {
+			// case "*.time.Time":
+			case core.PtrTimeType:
+				x, err := session.byte2Time(col, data)
+				if err != nil {
+					return err
+				}
+				v = x
+				fieldValue.Set(reflect.ValueOf(&x))
+			default:
 				if session.Statement.UseCascade {
 					structInter := reflect.New(fieldType.Elem())
 					table := session.Engine.autoMapType(structInter.Elem())
@@ -2846,82 +2960,11 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 							panic("unsupported composited primary key cascade")
 						}
 						var pk = make(core.PK, len(table.PrimaryKeys))
+						var err error
 						rawValueType := table.ColumnType(table.PKColumns()[0].FieldName)
-						switch rawValueType.Kind() {
-						case reflect.Int64:
-							x, err := strconv.ParseInt(string(data), 10, 64)
-							if err != nil {
-								return fmt.Errorf("arg %v as int: %s", key, err.Error())
-							}
-
-							pk[0] = x
-						case reflect.Int:
-							x, err := strconv.ParseInt(string(data), 10, 64)
-							if err != nil {
-								return fmt.Errorf("arg %v as int: %s", key, err.Error())
-							}
-
-							pk[0] = int(x)
-						case reflect.Int32:
-							x, err := strconv.ParseInt(string(data), 10, 64)
-							if err != nil {
-								return fmt.Errorf("arg %v as int: %s", key, err.Error())
-							}
-
-							pk[0] = int32(x)
-						case reflect.Int16:
-							x, err := strconv.ParseInt(string(data), 10, 64)
-							if err != nil {
-								return fmt.Errorf("arg %v as int: %s", key, err.Error())
-							}
-
-							pk[0] = int16(x)
-						case reflect.Int8:
-							x, err := strconv.ParseInt(string(data), 10, 64)
-							if err != nil {
-								return fmt.Errorf("arg %v as int: %s", key, err.Error())
-							}
-
-							pk[0] = x
-						case reflect.Uint64:
-							x, err := strconv.ParseUint(string(data), 10, 64)
-							if err != nil {
-								return fmt.Errorf("arg %v as int: %s", key, err.Error())
-							}
-
-							pk[0] = x
-						case reflect.Uint:
-							x, err := strconv.ParseUint(string(data), 10, 64)
-							if err != nil {
-								return fmt.Errorf("arg %v as int: %s", key, err.Error())
-							}
-
-							pk[0] = uint(x)
-						case reflect.Uint32:
-							x, err := strconv.ParseUint(string(data), 10, 64)
-							if err != nil {
-								return fmt.Errorf("arg %v as int: %s", key, err.Error())
-							}
-
-							pk[0] = uint32(x)
-						case reflect.Uint16:
-							x, err := strconv.ParseUint(string(data), 10, 64)
-							if err != nil {
-								return fmt.Errorf("arg %v as int: %s", key, err.Error())
-							}
-
-							pk[0] = uint16(x)
-						case reflect.Uint8:
-							x, err := strconv.ParseUint(string(data), 10, 64)
-							if err != nil {
-								return fmt.Errorf("arg %v as int: %s", key, err.Error())
-							}
-
-							pk[0] = uint8(x)
-						case reflect.String:
-							pk[0] = string(data)
-						default:
-							panic("unsupported primary key type cascade")
+						pk[0], err = str2PK(string(data), rawValueType)
+						if err != nil {
+							return err
 						}
 
 						if !isPKZero(pk) {
@@ -2930,7 +2973,7 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 							// property to be fetched lazily
 							newsession := session.Engine.NewSession()
 							defer newsession.Close()
-							has, err := newsession.Id(pk).Cascade().Get(structInter.Interface())  // FIXME  NoCascade
+							has, err := newsession.Id(pk).NoCascade().Get(structInter.Interface())
 							if err != nil {
 								return err
 							}
@@ -2938,7 +2981,7 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 								v = structInter.Interface()
 								fieldValue.Set(reflect.ValueOf(v))
 							} else {
-								return errors.New("cascade obj is not exist!")
+								return errors.New("cascade obj is not exist")
 							}
 						}
 					}
@@ -2946,10 +2989,11 @@ func (session *Session) bytes2Value(col *core.Column, fieldValue *reflect.Value,
 					return fmt.Errorf("unsupported struct type in Scan: %s", fieldValue.Type().String())
 				}
 			}
-			return fmt.Errorf("unsupported type in Scan: %s", reflect.TypeOf(v).String())
+		default:
+			return fmt.Errorf("unsupported type in Scan: %s", fieldValue.Type().String())
 		}
 	default:
-		return fmt.Errorf("unsupported type in Scan: %s", reflect.TypeOf(v).String())
+		return fmt.Errorf("unsupported type in Scan: %s", fieldValue.Type().String())
 	}
 
 	return nil
@@ -2962,9 +3006,8 @@ func (session *Session) value2Interface(col *core.Column, fieldValue reflect.Val
 			data, err := fieldConvert.ToDB()
 			if err != nil {
 				return 0, err
-			} else {
-				return string(data), nil
 			}
+			return string(data), nil
 		}
 	}
 
@@ -2972,9 +3015,8 @@ func (session *Session) value2Interface(col *core.Column, fieldValue reflect.Val
 		data, err := fieldConvert.ToDB()
 		if err != nil {
 			return 0, err
-		} else {
-			return string(data), nil
 		}
+		return string(data), nil
 	}
 
 	fieldType := fieldValue.Type()
@@ -2983,7 +3025,7 @@ func (session *Session) value2Interface(col *core.Column, fieldValue reflect.Val
 		if fieldValue.IsNil() {
 			return nil, nil
 		} else if !fieldValue.IsValid() {
-			session.Engine.LogWarn("the field[", col.FieldName, "] is invalid")
+			session.Engine.logger.Warn("the field[", col.FieldName, "] is invalid")
 			return nil, nil
 		} else {
 			// !nashtsai! deference pointer type to instance type
@@ -3017,36 +3059,33 @@ func (session *Session) value2Interface(col *core.Column, fieldValue reflect.Val
 			}
 
 			fieldTable := session.Engine.autoMapType(fieldValue)
-			//if fieldTable, ok := session.Engine.Tables[fieldValue.Type()]; ok {
-				if len(fieldTable.PrimaryKeys) == 1 {
-					pkField := reflect.Indirect(fieldValue).FieldByName(fieldTable.PKColumns()[0].FieldName)
-					return pkField.Interface(), nil
-				}
-				return 0, fmt.Errorf("no primary key for col %v", col.Name)
-			//}
+			if len(fieldTable.PrimaryKeys) == 1 {
+				pkField := reflect.Indirect(fieldValue).FieldByName(fieldTable.PKColumns()[0].FieldName)
+				return pkField.Interface(), nil
+			}
+			return 0, fmt.Errorf("no primary key for col %v", col.Name)
 		}
 
 		if col.SQLType.IsText() {
 			bytes, err := json.Marshal(fieldValue.Interface())
 			if err != nil {
-				session.Engine.LogError(err)
+				session.Engine.logger.Error(err)
 				return 0, err
 			}
 			return string(bytes), nil
 		} else if col.SQLType.IsBlob() {
 			bytes, err := json.Marshal(fieldValue.Interface())
 			if err != nil {
-				session.Engine.LogError(err)
+				session.Engine.logger.Error(err)
 				return 0, err
 			}
 			return bytes, nil
 		}
-
 		return nil, fmt.Errorf("Unsupported type %v", fieldValue.Type())
 	case reflect.Complex64, reflect.Complex128:
 		bytes, err := json.Marshal(fieldValue.Interface())
 		if err != nil {
-			session.Engine.LogError(err)
+			session.Engine.logger.Error(err)
 			return 0, err
 		}
 		return string(bytes), nil
@@ -3058,7 +3097,7 @@ func (session *Session) value2Interface(col *core.Column, fieldValue reflect.Val
 		if col.SQLType.IsText() {
 			bytes, err := json.Marshal(fieldValue.Interface())
 			if err != nil {
-				session.Engine.LogError(err)
+				session.Engine.logger.Error(err)
 				return 0, err
 			}
 			return string(bytes), nil
@@ -3071,7 +3110,7 @@ func (session *Session) value2Interface(col *core.Column, fieldValue reflect.Val
 			} else {
 				bytes, err = json.Marshal(fieldValue.Interface())
 				if err != nil {
-					session.Engine.LogError(err)
+					session.Engine.logger.Error(err)
 					return 0, err
 				}
 			}
@@ -3086,8 +3125,12 @@ func (session *Session) value2Interface(col *core.Column, fieldValue reflect.Val
 }
 
 func (session *Session) innerInsert(bean interface{}) (int64, error) {
-	table := session.Engine.TableInfo(bean)
-	session.Statement.RefTable = table
+	session.Statement.setRefValue(rValue(bean))
+	if len(session.Statement.TableName()) <= 0 {
+		return 0, ErrTableNotFound
+	}
+
+	table := session.Statement.RefTable
 
 	// handle BeforeInsertProcessor
 	for _, closure := range session.beforeClosures {
@@ -3099,7 +3142,7 @@ func (session *Session) innerInsert(bean interface{}) (int64, error) {
 		processor.BeforeInsert()
 	}
 	// --
-	colNames, args, err := genCols(table, session, bean, false, false)
+	colNames, args, err := genCols(session.Statement.RefTable, session, bean, false, false)
 	if err != nil {
 		return 0, err
 	}
@@ -3127,17 +3170,14 @@ func (session *Session) innerInsert(bean interface{}) (int64, error) {
 		colPlaces = colPlaces[0 : len(colPlaces)-2]
 	}
 
-	sqlStr := fmt.Sprintf("INSERT INTO %v%v%v (%v%v%v) VALUES (%v)",
-		session.Engine.QuoteStr(),
-		session.Statement.TableName(),
-		session.Engine.QuoteStr(),
+	sqlStr := fmt.Sprintf("INSERT INTO %s (%v%v%v) VALUES (%v)",
+		session.Engine.Quote(session.Statement.TableName()),
 		session.Engine.QuoteStr(),
 		strings.Join(colNames, session.Engine.Quote(", ")),
 		session.Engine.QuoteStr(),
 		colPlaces)
 
 	handleAfterInsertProcessorFunc := func(bean interface{}) {
-
 		if session.IsAutoCommit {
 			for _, closure := range session.afterClosures {
 				closure(bean)
@@ -3170,12 +3210,11 @@ func (session *Session) innerInsert(bean interface{}) (int64, error) {
 	if session.Engine.dialect.DBType() == core.ORACLE && len(table.AutoIncrement) > 0 {
 		//assert table.AutoIncrement != ""
 		res, err := session.query("select seq_atable.currval from dual", args...)
-
 		if err != nil {
 			return 0, err
-		} else {
-			handleAfterInsertProcessorFunc(bean)
 		}
+
+		handleAfterInsertProcessorFunc(bean)
 
 		if cacher := session.Engine.getCacher2(table); cacher != nil && session.Statement.UseCache {
 			session.cacheInsert(session.Statement.TableName())
@@ -3184,7 +3223,7 @@ func (session *Session) innerInsert(bean interface{}) (int64, error) {
 		if table.Version != "" && session.Statement.checkVersion {
 			verValue, err := table.VersionColumn().ValueOf(bean)
 			if err != nil {
-				session.Engine.LogError(err)
+				session.Engine.logger.Error(err)
 			} else if verValue.IsValid() && verValue.CanSet() {
 				verValue.SetInt(1)
 			}
@@ -3196,33 +3235,20 @@ func (session *Session) innerInsert(bean interface{}) (int64, error) {
 
 		idByte := res[0][table.AutoIncrement]
 		id, err := strconv.ParseInt(string(idByte), 10, 64)
-		if err != nil {
+		if err != nil || id <= 0 {
 			return 1, err
 		}
 
 		aiValue, err := table.AutoIncrColumn().ValueOf(bean)
 		if err != nil {
-			session.Engine.LogError(err)
+			session.Engine.logger.Error(err)
 		}
 
-		if aiValue == nil || !aiValue.IsValid() /*|| aiValue. != 0*/ || !aiValue.CanSet() {
+		if aiValue == nil || !aiValue.IsValid() || !aiValue.CanSet() {
 			return 1, nil
 		}
 
-		var v interface{} = id
-		switch aiValue.Type().Kind() {
-		case reflect.Int32:
-			v = int32(id)
-		case reflect.Int:
-			v = int(id)
-		case reflect.Uint32:
-			v = uint32(id)
-		case reflect.Uint64:
-			v = uint64(id)
-		case reflect.Uint:
-			v = uint(id)
-		}
-		aiValue.Set(reflect.ValueOf(v))
+		aiValue.Set(int64ToIntValue(id, aiValue.Type()))
 
 		return 1, nil
 	} else if session.Engine.dialect.DBType() == core.POSTGRES && len(table.AutoIncrement) > 0 {
@@ -3232,9 +3258,8 @@ func (session *Session) innerInsert(bean interface{}) (int64, error) {
 
 		if err != nil {
 			return 0, err
-		} else {
-			handleAfterInsertProcessorFunc(bean)
 		}
+		handleAfterInsertProcessorFunc(bean)
 
 		if cacher := session.Engine.getCacher2(table); cacher != nil && session.Statement.UseCache {
 			session.cacheInsert(session.Statement.TableName())
@@ -3243,7 +3268,7 @@ func (session *Session) innerInsert(bean interface{}) (int64, error) {
 		if table.Version != "" && session.Statement.checkVersion {
 			verValue, err := table.VersionColumn().ValueOf(bean)
 			if err != nil {
-				session.Engine.LogError(err)
+				session.Engine.logger.Error(err)
 			} else if verValue.IsValid() && verValue.CanSet() {
 				verValue.SetInt(1)
 			}
@@ -3255,42 +3280,29 @@ func (session *Session) innerInsert(bean interface{}) (int64, error) {
 
 		idByte := res[0][table.AutoIncrement]
 		id, err := strconv.ParseInt(string(idByte), 10, 64)
-		if err != nil {
+		if err != nil || id <= 0 {
 			return 1, err
 		}
 
 		aiValue, err := table.AutoIncrColumn().ValueOf(bean)
 		if err != nil {
-			session.Engine.LogError(err)
+			session.Engine.logger.Error(err)
 		}
 
-		if aiValue == nil || !aiValue.IsValid() /*|| aiValue. != 0*/ || !aiValue.CanSet() {
+		if aiValue == nil || !aiValue.IsValid() || !aiValue.CanSet() {
 			return 1, nil
 		}
 
-		var v interface{} = id
-		switch aiValue.Type().Kind() {
-		case reflect.Int32:
-			v = int32(id)
-		case reflect.Int:
-			v = int(id)
-		case reflect.Uint32:
-			v = uint32(id)
-		case reflect.Uint64:
-			v = uint64(id)
-		case reflect.Uint:
-			v = uint(id)
-		}
-		aiValue.Set(reflect.ValueOf(v))
+		aiValue.Set(int64ToIntValue(id, aiValue.Type()))
 
 		return 1, nil
 	} else {
 		res, err := session.exec(sqlStr, args...)
 		if err != nil {
 			return 0, err
-		} else {
-			handleAfterInsertProcessorFunc(bean)
 		}
+
+		defer handleAfterInsertProcessorFunc(bean)
 
 		if cacher := session.Engine.getCacher2(table); cacher != nil && session.Statement.UseCache {
 			session.cacheInsert(session.Statement.TableName())
@@ -3299,7 +3311,7 @@ func (session *Session) innerInsert(bean interface{}) (int64, error) {
 		if table.Version != "" && session.Statement.checkVersion {
 			verValue, err := table.VersionColumn().ValueOf(bean)
 			if err != nil {
-				session.Engine.LogError(err)
+				session.Engine.logger.Error(err)
 			} else if verValue.IsValid() && verValue.CanSet() {
 				verValue.SetInt(1)
 			}
@@ -3309,7 +3321,7 @@ func (session *Session) innerInsert(bean interface{}) (int64, error) {
 			return res.RowsAffected()
 		}
 
-		var id int64 = 0
+		var id int64
 		id, err = res.LastInsertId()
 		if err != nil || id <= 0 {
 			return res.RowsAffected()
@@ -3317,33 +3329,20 @@ func (session *Session) innerInsert(bean interface{}) (int64, error) {
 
 		aiValue, err := table.AutoIncrColumn().ValueOf(bean)
 		if err != nil {
-			session.Engine.LogError(err)
+			session.Engine.logger.Error(err)
 		}
 
-		if aiValue == nil || !aiValue.IsValid() /*|| aiValue.Int() != 0*/ || !aiValue.CanSet() {
+		if aiValue == nil || !aiValue.IsValid() || !aiValue.CanSet() {
 			return res.RowsAffected()
 		}
 
-		var v interface{} = id
-		switch aiValue.Type().Kind() {
-		case reflect.Int32:
-			v = int32(id)
-		case reflect.Int:
-			v = int(id)
-		case reflect.Uint32:
-			v = uint32(id)
-		case reflect.Uint64:
-			v = uint64(id)
-		case reflect.Uint:
-			v = uint(id)
-		}
-		aiValue.Set(reflect.ValueOf(v))
+		aiValue.Set(int64ToIntValue(id, aiValue.Type()))
 
 		return res.RowsAffected()
 	}
 }
 
-// Method InsertOne insert only one struct into database as a record.
+// InsertOne insert only one struct into database as a record.
 // The in parameter bean must a struct or a point to struct. The return
 // parameter is inserted and error
 func (session *Session) InsertOne(bean interface{}) (int64, error) {
@@ -3355,47 +3354,6 @@ func (session *Session) InsertOne(bean interface{}) (int64, error) {
 	return session.innerInsert(bean)
 }
 
-func (statement *Statement) convertUpdateSql(sqlStr string) (string, string) {
-	if statement.RefTable == nil || len(statement.RefTable.PrimaryKeys) != 1 {
-		return "", ""
-	}
-
-	colstrs := statement.JoinColumns(statement.RefTable.PKColumns(), true)
-	sqls := splitNNoCase(sqlStr, "where", 2)
-	if len(sqls) != 2 {
-		if len(sqls) == 1 {
-			return sqls[0], fmt.Sprintf("SELECT %v FROM %v",
-				colstrs, statement.Engine.Quote(statement.TableName()))
-		}
-		return "", ""
-	}
-
-	var whereStr = sqls[1]
-
-	//TODO: for postgres only, if any other database?
-	var paraStr string
-	if statement.Engine.dialect.DBType() == core.POSTGRES {
-		paraStr = "$"
-	} else if statement.Engine.dialect.DBType() == core.MSSQL {
-		paraStr = ":"
-	}
-
-	if paraStr != "" {
-		if strings.Contains(sqls[1], paraStr) {
-			dollers := strings.Split(sqls[1], paraStr)
-			whereStr = dollers[0]
-			for i, c := range dollers[1:] {
-				ccs := strings.SplitN(c, " ", 2)
-				whereStr += fmt.Sprintf(paraStr+"%v %v", i+1, ccs[1])
-			}
-		}
-	}
-
-	return sqls[0], fmt.Sprintf("SELECT %v FROM %v WHERE %v",
-		colstrs, statement.Engine.Quote(statement.TableName()),
-		whereStr)
-}
-
 func (session *Session) cacheInsert(tables ...string) error {
 	if session.Statement.RefTable == nil {
 		return ErrCacheFailed
@@ -3405,7 +3363,7 @@ func (session *Session) cacheInsert(tables ...string) error {
 	cacher := session.Engine.getCacher2(table)
 
 	for _, t := range tables {
-		session.Engine.LogDebug("[cache] clear sql:", t)
+		session.Engine.logger.Debug("[cache] clear sql:", t)
 		cacher.ClearIds(t)
 	}
 
@@ -3418,14 +3376,14 @@ func (session *Session) cacheUpdate(sqlStr string, args ...interface{}) error {
 		return ErrCacheFailed
 	}
 
-	oldhead, newsql := session.Statement.convertUpdateSql(sqlStr)
+	oldhead, newsql := session.Statement.convertUpdateSQL(sqlStr)
 	if newsql == "" {
 		return ErrCacheFailed
 	}
 	for _, filter := range session.Engine.dialect.Filters() {
 		newsql = filter.Do(newsql, session.Engine.dialect, session.Statement.RefTable)
 	}
-	session.Engine.LogDebug("[cacheUpdate] new sql", oldhead, newsql)
+	session.Engine.logger.Debug("[cacheUpdate] new sql", oldhead, newsql)
 
 	var nStart int
 	if len(args) > 0 {
@@ -3439,7 +3397,7 @@ func (session *Session) cacheUpdate(sqlStr string, args ...interface{}) error {
 	table := session.Statement.RefTable
 	cacher := session.Engine.getCacher2(table)
 	tableName := session.Statement.TableName()
-	session.Engine.LogDebug("[cacheUpdate] get cache sql", newsql, args[nStart:])
+	session.Engine.logger.Debug("[cacheUpdate] get cache sql", newsql, args[nStart:])
 	ids, err := core.GetCacheSql(cacher, tableName, newsql, args[nStart:])
 	if err != nil {
 		rows, err := session.DB().Query(newsql, args[nStart:]...)
@@ -3472,7 +3430,7 @@ func (session *Session) cacheUpdate(sqlStr string, args ...interface{}) error {
 
 			ids = append(ids, pk)
 		}
-		session.Engine.LogDebug("[cacheUpdate] find updated id", ids)
+		session.Engine.logger.Debug("[cacheUpdate] find updated id", ids)
 	} /*else {
 	    session.Engine.LogDebug("[xorm:cacheUpdate] del cached sql:", tableName, newsql, args)
 	    cacher.DelIds(tableName, genSqlKey(newsql, args))
@@ -3503,16 +3461,16 @@ func (session *Session) cacheUpdate(sqlStr string, args ...interface{}) error {
 				} else if strings.Contains(colName, session.Engine.QuoteStr()) {
 					colName = strings.TrimSpace(strings.Replace(colName, session.Engine.QuoteStr(), "", -1))
 				} else {
-					session.Engine.LogDebug("[cacheUpdate] cannot find column", tableName, colName)
+					session.Engine.logger.Debug("[cacheUpdate] cannot find column", tableName, colName)
 					return ErrCacheFailed
 				}
 
 				if col := table.GetColumn(colName); col != nil {
 					fieldValue, err := col.ValueOf(bean)
 					if err != nil {
-						session.Engine.LogError(err)
+						session.Engine.logger.Error(err)
 					} else {
-						session.Engine.LogDebug("[cacheUpdate] set bean field", bean, colName, fieldValue.Interface())
+						session.Engine.logger.Debug("[cacheUpdate] set bean field", bean, colName, fieldValue.Interface())
 						if col.IsVersion && session.Statement.checkVersion {
 							fieldValue.SetInt(fieldValue.Int() + 1)
 						} else {
@@ -3520,16 +3478,16 @@ func (session *Session) cacheUpdate(sqlStr string, args ...interface{}) error {
 						}
 					}
 				} else {
-					session.Engine.LogErrorf("[cacheUpdate] ERROR: column %v is not table %v's",
+					session.Engine.logger.Errorf("[cacheUpdate] ERROR: column %v is not table %v's",
 						colName, table.Name)
 				}
 			}
 
-			session.Engine.LogDebug("[cacheUpdate] update cache", tableName, id, bean)
+			session.Engine.logger.Debug("[cacheUpdate] update cache", tableName, id, bean)
 			cacher.PutBean(tableName, sid, bean)
 		}
 	}
-	session.Engine.LogDebug("[cacheUpdate] clear cached table sql:", tableName)
+	session.Engine.logger.Debug("[cacheUpdate] clear cached table sql:", tableName)
 	cacher.ClearIds(tableName)
 	return nil
 }
@@ -3546,11 +3504,11 @@ func (session *Session) Update(bean interface{}, condiBean ...interface{}) (int6
 		defer session.Close()
 	}
 
-	t := rType(bean)
+	v := rValue(bean)
+	t := v.Type()
 
 	var colNames []string
 	var args []interface{}
-	var table *core.Table
 
 	// handle before update processors
 	for _, closure := range session.beforeClosures {
@@ -3563,26 +3521,27 @@ func (session *Session) Update(bean interface{}, condiBean ...interface{}) (int6
 	// --
 
 	var err error
-	if t.Kind() == reflect.Struct {
-		table = session.Engine.TableInfo(bean)
-		session.Statement.RefTable = table
+	var isMap = t.Kind() == reflect.Map
+	var isStruct = t.Kind() == reflect.Struct
+	if isStruct {
+		session.Statement.setRefValue(v)
+
+		if len(session.Statement.TableName()) <= 0 {
+			return 0, ErrTableNotFound
+		}
 
 		if session.Statement.ColumnStr == "" {
-			colNames, args = buildUpdates(session.Engine, table, bean, false, false,
+			colNames, args = buildUpdates(session.Engine, session.Statement.RefTable, bean, false, false,
 				false, false, session.Statement.allUseBool, session.Statement.useAllCols,
 				session.Statement.mustColumnMap, session.Statement.nullableMap,
-				session.Statement.columnMap, true)
+				session.Statement.columnMap, true, session.Statement.unscoped)
 		} else {
-			colNames, args, err = genCols(table, session, bean, true, true)
+			colNames, args, err = genCols(session.Statement.RefTable, session, bean, true, true)
 			if err != nil {
 				return 0, err
 			}
 		}
-	} else if t.Kind() == reflect.Map {
-		if session.Statement.RefTable == nil {
-			return 0, ErrTableNotFound
-		}
-		table = session.Statement.RefTable
+	} else if isMap {
 		colNames = make([]string, 0)
 		args = make([]interface{}, 0)
 		bValue := reflect.Indirect(reflect.ValueOf(bean))
@@ -3595,17 +3554,21 @@ func (session *Session) Update(bean interface{}, condiBean ...interface{}) (int6
 		return 0, ErrParamsType
 	}
 
-	if session.Statement.UseAutoTime && table.Updated != "" {
+	table := session.Statement.RefTable
+
+	if session.Statement.UseAutoTime && table != nil && table.Updated != "" {
 		colNames = append(colNames, session.Engine.Quote(table.Updated)+" = ?")
 		col := table.UpdatedColumn()
 		val, t := session.Engine.NowTime2(col.SQLType.Name)
 		args = append(args, val)
 
 		var colName = col.Name
-		session.afterClosures = append(session.afterClosures, func(bean interface{}) {
-			col := table.GetColumn(colName)
-			setColumnTime(bean, col, t)
-		})
+		if isStruct {
+			session.afterClosures = append(session.afterClosures, func(bean interface{}) {
+				col := table.GetColumn(colName)
+				setColumnTime(bean, col, t)
+			})
+		}
 	}
 
 	//for update action to like "column = column + ?"
@@ -3626,99 +3589,68 @@ func (session *Session) Update(bean interface{}, condiBean ...interface{}) (int6
 		colNames = append(colNames, session.Engine.Quote(v.colName)+" = "+v.expr)
 	}
 
-	var condiColNames []string
-	var condiArgs []interface{}
+	session.Statement.processIdParam()
 
-	if len(condiBean) > 0 {
-		condiColNames, condiArgs = buildConditions(session.Engine, session.Statement.RefTable, condiBean[0], true, true,
-			false, true, session.Statement.allUseBool, session.Statement.useAllCols,
-			session.Statement.unscoped, session.Statement.mustColumnMap, session.Statement.TableName(), false)
+	var autoCond builder.Cond
+	if !session.Statement.noAutoCondition && len(condiBean) > 0 {
+		var err error
+		autoCond, err = session.Statement.buildConds(session.Statement.RefTable, condiBean[0], true, true, false, true, false)
+		if err != nil {
+			return 0, err
+		}
 	}
 
-	var condition = ""
-	session.Statement.processIdParam()
 	st := session.Statement
 	defer session.resetStatement()
-	if st.WhereStr != "" {
-		condition = fmt.Sprintf("%v", st.WhereStr)
-	}
 
-	if condition == "" {
-		if len(condiColNames) > 0 {
-			condition = fmt.Sprintf("%v", strings.Join(condiColNames, " "+session.Engine.Dialect().AndStr()+" "))
-		}
-	} else {
-		if len(condiColNames) > 0 {
-			condition = fmt.Sprintf("(%v) %v (%v)", condition,
-				session.Engine.Dialect().AndStr(), strings.Join(condiColNames, " "+session.Engine.Dialect().AndStr()+" "))
-		}
-	}
+	var sqlStr string
+	var condArgs []interface{}
+	var condSQL string
+	cond := session.Statement.cond.And(autoCond)
 
-	var sqlStr, inSql string
-	var inArgs []interface{}
 	doIncVer := false
 	var verValue *reflect.Value
-	if table.Version != "" && session.Statement.checkVersion {
-		if condition != "" {
-			condition = fmt.Sprintf("WHERE (%v) %v %v = ?", condition, session.Engine.Dialect().AndStr(),
-				session.Engine.Quote(table.Version))
-		} else {
-			condition = fmt.Sprintf("WHERE %v = ?", session.Engine.Quote(table.Version))
+	if table != nil && table.Version != "" && session.Statement.checkVersion {
+		verValue, err = table.VersionColumn().ValueOf(bean)
+		if err != nil {
+			return 0, err
 		}
-		inSql, inArgs = session.Statement.genInSql()
-		if len(inSql) > 0 {
-			if condition != "" {
-				condition += " " + session.Engine.Dialect().AndStr() + " " + inSql
-			} else {
-				condition = "WHERE " + inSql
-			}
+
+		cond = cond.And(builder.Eq{session.Engine.Quote(table.Version): verValue.Interface()})
+		condSQL, condArgs, _ = builder.ToSQL(cond)
+
+		if len(condSQL) > 0 {
+			condSQL = "WHERE " + condSQL
 		}
 
 		if st.LimitN > 0 {
-			condition = condition + fmt.Sprintf(" LIMIT %d", st.LimitN)
+			condSQL = condSQL + fmt.Sprintf(" LIMIT %d", st.LimitN)
 		}
 
 		sqlStr = fmt.Sprintf("UPDATE %v SET %v, %v %v",
 			session.Engine.Quote(session.Statement.TableName()),
 			strings.Join(colNames, ", "),
 			session.Engine.Quote(table.Version)+" = "+session.Engine.Quote(table.Version)+" + 1",
-			condition)
+			condSQL)
 
-		verValue, err = table.VersionColumn().ValueOf(bean)
-		if err != nil {
-			return 0, err
-		}
-
-		condiArgs = append(condiArgs, verValue.Interface())
 		doIncVer = true
 	} else {
-		if condition != "" {
-			condition = "WHERE " + condition
-		}
-		inSql, inArgs = session.Statement.genInSql()
-		if len(inSql) > 0 {
-			if condition != "" {
-				condition += " " + session.Engine.Dialect().AndStr() + " " + inSql
-			} else {
-				condition = "WHERE " + inSql
-			}
+		condSQL, condArgs, _ = builder.ToSQL(cond)
+		if len(condSQL) > 0 {
+			condSQL = "WHERE " + condSQL
 		}
 
 		if st.LimitN > 0 {
-			condition = condition + fmt.Sprintf(" LIMIT %d", st.LimitN)
+			condSQL = condSQL + fmt.Sprintf(" LIMIT %d", st.LimitN)
 		}
 
 		sqlStr = fmt.Sprintf("UPDATE %v SET %v %v",
 			session.Engine.Quote(session.Statement.TableName()),
 			strings.Join(colNames, ", "),
-			condition)
+			condSQL)
 	}
 
-	args = append(args, st.Params...)
-	args = append(args, inArgs...)
-	args = append(args, condiArgs...)
-
-	res, err := session.exec(sqlStr, args...)
+	res, err := session.exec(sqlStr, append(args, condArgs...)...)
 	if err != nil {
 		return 0, err
 	} else if doIncVer {
@@ -3727,9 +3659,11 @@ func (session *Session) Update(bean interface{}, condiBean ...interface{}) (int6
 		}
 	}
 
-	if cacher := session.Engine.getCacher2(table); cacher != nil && session.Statement.UseCache {
-		cacher.ClearIds(session.Statement.TableName())
-		cacher.ClearBeans(session.Statement.TableName())
+	if table != nil {
+		if cacher := session.Engine.getCacher2(table); cacher != nil && session.Statement.UseCache {
+			cacher.ClearIds(session.Statement.TableName())
+			cacher.ClearBeans(session.Statement.TableName())
+		}
 	}
 
 	// handle after update processors
@@ -3738,7 +3672,7 @@ func (session *Session) Update(bean interface{}, condiBean ...interface{}) (int6
 			closure(bean)
 		}
 		if processor, ok := interface{}(bean).(AfterUpdateProcessor); ok {
-			session.Engine.LogDebug("[event]", session.Statement.TableName(), " has after update processor")
+			session.Engine.logger.Debug("[event]", session.Statement.TableName(), " has after update processor")
 			processor.AfterUpdate()
 		}
 	} else {
@@ -3749,6 +3683,7 @@ func (session *Session) Update(bean interface{}, condiBean ...interface{}) (int6
 			} else {
 				afterClosures := make([]func(interface{}), lenAfterClosures)
 				copy(afterClosures, session.afterClosures)
+				// FIXME: if bean is a map type, it will panic because map cannot be as map key
 				session.afterUpdateBeans[bean] = &afterClosures
 			}
 
@@ -3774,7 +3709,7 @@ func (session *Session) cacheDelete(sqlStr string, args ...interface{}) error {
 		sqlStr = filter.Do(sqlStr, session.Engine.dialect, session.Statement.RefTable)
 	}
 
-	newsql := session.Statement.convertIdSql(sqlStr)
+	newsql := session.Statement.convertIDSQL(sqlStr)
 	if newsql == "" {
 		return ErrCacheFailed
 	}
@@ -3795,18 +3730,16 @@ func (session *Session) cacheDelete(sqlStr string, args ...interface{}) error {
 				for _, col := range session.Statement.RefTable.PKColumns() {
 					if v, ok := data[col.Name]; !ok {
 						return errors.New("no id")
-					} else {
-						if col.SQLType.IsText() {
-							pk = append(pk, string(v))
-						} else if col.SQLType.IsNumeric() {
-							id, err = strconv.ParseInt(string(v), 10, 64)
-							if err != nil {
-								return err
-							}
-							pk = append(pk, id)
-						} else {
-							return errors.New("not supported primary key type")
+					} else if col.SQLType.IsText() {
+						pk = append(pk, string(v))
+					} else if col.SQLType.IsNumeric() {
+						id, err = strconv.ParseInt(string(v), 10, 64)
+						if err != nil {
+							return err
 						}
+						pk = append(pk, id)
+					} else {
+						return errors.New("not supported primary key type")
 					}
 				}
 				ids = append(ids, pk)
@@ -3818,14 +3751,14 @@ func (session *Session) cacheDelete(sqlStr string, args ...interface{}) error {
 	}*/
 
 	for _, id := range ids {
-		session.Engine.LogDebug("[cacheDelete] delete cache obj", tableName, id)
+		session.Engine.logger.Debug("[cacheDelete] delete cache obj", tableName, id)
 		sid, err := id.ToString()
 		if err != nil {
 			return err
 		}
 		cacher.DelBean(tableName, sid)
 	}
-	session.Engine.LogDebug("[cacheDelete] clear cache sql", tableName)
+	session.Engine.logger.Debug("[cacheDelete] clear cache sql", tableName)
 	cacher.ClearIds(tableName)
 	return nil
 }
@@ -3837,6 +3770,9 @@ func (session *Session) Delete(bean interface{}) (int64, error) {
 		defer session.Close()
 	}
 
+	session.Statement.setRefValue(rValue(bean))
+	var table = session.Statement.RefTable
+
 	// handle before delete processors
 	for _, closure := range session.beforeClosures {
 		closure(bean)
@@ -3846,68 +3782,101 @@ func (session *Session) Delete(bean interface{}) (int64, error) {
 	if processor, ok := interface{}(bean).(BeforeDeleteProcessor); ok {
 		processor.BeforeDelete()
 	}
+
 	// --
-
-	table := session.Engine.TableInfo(bean)
-	session.Statement.RefTable = table
-	colNames, args := buildConditions(session.Engine, table, bean, true, true,
-		false, true, session.Statement.allUseBool, session.Statement.useAllCols,
-		session.Statement.unscoped, session.Statement.mustColumnMap,
-		session.Statement.TableName(), false)
-
-	var condition = ""
-	var andStr = session.Engine.dialect.AndStr()
-
-	session.Statement.processIdParam()
-	if session.Statement.WhereStr != "" {
-		condition = session.Statement.WhereStr
-		if len(colNames) > 0 {
-			condition += " " + andStr + " " + strings.Join(colNames, " "+andStr+" ")
-		}
-	} else {
-		condition = strings.Join(colNames, " "+andStr+" ")
-	}
-	inSql, inArgs := session.Statement.genInSql()
-	if len(inSql) > 0 {
-		if len(condition) > 0 {
-			condition += " " + andStr + " "
-		}
-		condition += inSql
-		args = append(args, inArgs...)
-	}
-	if len(condition) == 0 {
+	condSQL, condArgs, _ := session.Statement.genConds(bean)
+	if len(condSQL) == 0 && session.Statement.LimitN == 0 {
 		return 0, ErrNeedDeletedCond
 	}
 
-	sqlStr, sqlStrForCache := "", ""
-	argsForCache := make([]interface{}, 0, len(args)*2)
-	if session.Statement.unscoped || table.DeletedColumn() == nil { // tag "deleted" is disabled
-		sqlStr = fmt.Sprintf("DELETE FROM %v WHERE %v",
-			session.Engine.Quote(session.Statement.TableName()), condition)
+	var tableName = session.Engine.Quote(session.Statement.TableName())
+	var deleteSQL string
+	if len(condSQL) > 0 {
+		deleteSQL = fmt.Sprintf("DELETE FROM %v WHERE %v", tableName, condSQL)
+	} else {
+		deleteSQL = fmt.Sprintf("DELETE FROM %v", tableName)
+	}
 
-		sqlStrForCache = sqlStr
-		copy(argsForCache, args)
-		argsForCache = append(session.Statement.Params, argsForCache...)
+	var orderSQL string
+	if len(session.Statement.OrderStr) > 0 {
+		orderSQL += fmt.Sprintf(" ORDER BY %s", session.Statement.OrderStr)
+	}
+	if session.Statement.LimitN > 0 {
+		orderSQL += fmt.Sprintf(" LIMIT %d", session.Statement.LimitN)
+	}
+
+	if len(orderSQL) > 0 {
+		switch session.Engine.dialect.DBType() {
+		case core.POSTGRES:
+			inSQL := fmt.Sprintf("ctid IN (SELECT ctid FROM %s%s)", tableName, orderSQL)
+			if len(condSQL) > 0 {
+				deleteSQL += " AND " + inSQL
+			} else {
+				deleteSQL += " WHERE " + inSQL
+			}
+		case core.SQLITE:
+			inSQL := fmt.Sprintf("rowid IN (SELECT rowid FROM %s%s)", tableName, orderSQL)
+			if len(condSQL) > 0 {
+				deleteSQL += " AND " + inSQL
+			} else {
+				deleteSQL += " WHERE " + inSQL
+			}
+		// TODO: how to handle delete limit on mssql?
+		case core.MSSQL:
+			return 0, ErrNotImplemented
+		default:
+			deleteSQL += orderSQL
+		}
+	}
+
+	var realSQL string
+	argsForCache := make([]interface{}, 0, len(condArgs)*2)
+	if session.Statement.unscoped || table.DeletedColumn() == nil { // tag "deleted" is disabled
+		realSQL = deleteSQL
+		copy(argsForCache, condArgs)
+		argsForCache = append(condArgs, argsForCache...)
 	} else {
 		// !oinume! sqlStrForCache and argsForCache is needed to behave as executing "DELETE FROM ..." for cache.
-		sqlStrForCache = fmt.Sprintf("DELETE FROM %v WHERE %v",
-			session.Engine.Quote(session.Statement.TableName()), condition)
-		copy(argsForCache, args)
-		argsForCache = append(session.Statement.Params, argsForCache...)
+		copy(argsForCache, condArgs)
+		argsForCache = append(condArgs, argsForCache...)
 
 		deletedColumn := table.DeletedColumn()
-		sqlStr = fmt.Sprintf("UPDATE %v SET %v = ? WHERE %v",
+		realSQL = fmt.Sprintf("UPDATE %v SET %v = ? WHERE %v",
 			session.Engine.Quote(session.Statement.TableName()),
 			session.Engine.Quote(deletedColumn.Name),
-			condition)
+			condSQL)
+
+		if len(orderSQL) > 0 {
+			switch session.Engine.dialect.DBType() {
+			case core.POSTGRES:
+				inSQL := fmt.Sprintf("ctid IN (SELECT ctid FROM %s%s)", tableName, orderSQL)
+				if len(condSQL) > 0 {
+					realSQL += " AND " + inSQL
+				} else {
+					realSQL += " WHERE " + inSQL
+				}
+			case core.SQLITE:
+				inSQL := fmt.Sprintf("rowid IN (SELECT rowid FROM %s%s)", tableName, orderSQL)
+				if len(condSQL) > 0 {
+					realSQL += " AND " + inSQL
+				} else {
+					realSQL += " WHERE " + inSQL
+				}
+			// TODO: how to handle delete limit on mssql?
+			case core.MSSQL:
+				return 0, ErrNotImplemented
+			default:
+				realSQL += orderSQL
+			}
+		}
 
 		// !oinume! Insert NowTime to the head of session.Statement.Params
-		session.Statement.Params = append(session.Statement.Params, "")
-		paramsLen := len(session.Statement.Params)
-		copy(session.Statement.Params[1:paramsLen], session.Statement.Params[0:paramsLen-1])
+		condArgs = append(condArgs, "")
+		paramsLen := len(condArgs)
+		copy(condArgs[1:paramsLen], condArgs[0:paramsLen-1])
 
 		val, t := session.Engine.NowTime2(deletedColumn.SQLType.Name)
-		session.Statement.Params[0] = val
+		condArgs[0] = val
 
 		var colName = deletedColumn.Name
 		session.afterClosures = append(session.afterClosures, func(bean interface{}) {
@@ -3916,13 +3885,11 @@ func (session *Session) Delete(bean interface{}) (int64, error) {
 		})
 	}
 
-	args = append(session.Statement.Params, args...)
-
 	if cacher := session.Engine.getCacher2(session.Statement.RefTable); cacher != nil && session.Statement.UseCache {
-		session.cacheDelete(sqlStrForCache, argsForCache...)
+		session.cacheDelete(deleteSQL, argsForCache...)
 	}
 
-	res, err := session.exec(sqlStr, args...)
+	res, err := session.exec(realSQL, condArgs...)
 	if err != nil {
 		return 0, err
 	}
@@ -3969,40 +3936,52 @@ func (session *Session) LastSQL() (string, []interface{}) {
 	return session.lastSQL, session.lastSQLArgs
 }
 
-func (s *Session) Sync2(beans ...interface{}) error {
-	engine := s.Engine
+// tbName get some table's table name
+func (session *Session) tbNameNoSchema(table *core.Table) string {
+	if len(session.Statement.AltTableName) > 0 {
+		return session.Statement.AltTableName
+	}
+
+	return table.Name
+}
+
+// Sync2 synchronize structs to database tables
+func (session *Session) Sync2(beans ...interface{}) error {
+	engine := session.Engine
 
 	tables, err := engine.DBMetas()
 	if err != nil {
 		return err
 	}
 
-	structTables := make([]*core.Table, 0)
+	var structTables []*core.Table
 
 	for _, bean := range beans {
-		table := engine.TableInfo(bean)
+		v := rValue(bean)
+		table := engine.mapType(v)
 		structTables = append(structTables, table)
+		var tbName = session.tbNameNoSchema(table)
 
 		var oriTable *core.Table
 		for _, tb := range tables {
-			if tb.Name == table.Name {
+			if equalNoCase(tb.Name, tbName) {
 				oriTable = tb
 				break
 			}
 		}
 
 		if oriTable == nil {
-			err = engine.StoreEngine(s.Statement.StoreEngine).CreateTable(bean)
+			err = session.StoreEngine(session.Statement.StoreEngine).CreateTable(bean)
 			if err != nil {
 				return err
 			}
 
-			err = engine.CreateUniques(bean)
+			err = session.CreateUniques(bean)
 			if err != nil {
 				return err
 			}
 
-			err = engine.CreateIndexes(bean)
+			err = session.CreateIndexes(bean)
 			if err != nil {
 				return err
 			}
@@ -4010,7 +3989,7 @@ func (s *Session) Sync2(beans ...interface{}) error {
 			for _, col := range table.Columns() {
 				var oriCol *core.Column
 				for _, col2 := range oriTable.Columns() {
-					if col.Name == col2.Name {
+					if equalNoCase(col.Name, col2.Name) {
 						oriCol = col2
 						break
 					}
@@ -4025,29 +4004,48 @@ func (s *Session) Sync2(beans ...interface{}) error {
 							// currently only support mysql & postgres
 							if engine.dialect.DBType() == core.MYSQL ||
 								engine.dialect.DBType() == core.POSTGRES {
-								engine.LogInfof("Table %s column %s change type from %s to %s\n",
-									table.Name, col.Name, curType, expectedType)
+								engine.logger.Infof("Table %s column %s change type from %s to %s\n",
+									tbName, col.Name, curType, expectedType)
 								_, err = engine.Exec(engine.dialect.ModifyColumnSql(table.Name, col))
 							} else {
-								engine.LogWarnf("Table %s column %s db type is %s, struct type is %s\n",
-									table.Name, col.Name, curType, expectedType)
+								engine.logger.Warnf("Table %s column %s db type is %s, struct type is %s\n",
+									tbName, col.Name, curType, expectedType)
+							}
+						} else if strings.HasPrefix(curType, core.Varchar) && strings.HasPrefix(expectedType, core.Varchar) {
+							if engine.dialect.DBType() == core.MYSQL {
+								if oriCol.Length < col.Length {
+									engine.logger.Infof("Table %s column %s change type from varchar(%d) to varchar(%d)\n",
+										tbName, col.Name, oriCol.Length, col.Length)
+									_, err = engine.Exec(engine.dialect.ModifyColumnSql(table.Name, col))
+								}
 							}
 						} else {
-							engine.LogWarnf("Table %s column %s db type is %s, struct type is %s",
-								table.Name, col.Name, curType, expectedType)
+							if !(strings.HasPrefix(curType, expectedType) && curType[len(expectedType)] == '(') {
+								engine.logger.Warnf("Table %s column %s db type is %s, struct type is %s",
+									tbName, col.Name, curType, expectedType)
+							}
+						}
+					} else if expectedType == core.Varchar {
+						if engine.dialect.DBType() == core.MYSQL {
+							if oriCol.Length < col.Length {
+								engine.logger.Infof("Table %s column %s change type from varchar(%d) to varchar(%d)\n",
+									tbName, col.Name, oriCol.Length, col.Length)
+								_, err = engine.Exec(engine.dialect.ModifyColumnSql(table.Name, col))
+							}
 						}
 					}
 					if col.Default != oriCol.Default {
-						engine.LogWarnf("Table %s Column %s db default is %s, struct default is %s",
-							table.Name, col.Name, oriCol.Default, col.Default)
+						engine.logger.Warnf("Table %s Column %s db default is %s, struct default is %s",
+							tbName, col.Name, oriCol.Default, col.Default)
 					}
 					if col.Nullable != oriCol.Nullable {
-						engine.LogWarnf("Table %s Column %s db nullable is %v, struct nullable is %v",
-							table.Name, col.Name, oriCol.Nullable, col.Nullable)
+						engine.logger.Warnf("Table %s Column %s db nullable is %v, struct nullable is %v",
+							tbName, col.Name, oriCol.Nullable, col.Nullable)
 					}
 				} else {
 					session := engine.NewSession()
 					session.Statement.RefTable = table
+					session.Statement.tableName = tbName
 					defer session.Close()
 					err = session.addColumn(col.Name)
 				}
@@ -4071,7 +4069,7 @@ func (s *Session) Sync2(beans ...interface{}) error {
 
 				if oriIndex != nil {
 					if oriIndex.Type != index.Type {
-						sql := engine.dialect.DropIndexSql(table.Name, oriIndex)
+						sql := engine.dialect.DropIndexSql(tbName, oriIndex)
 						_, err = engine.Exec(sql)
 						if err != nil {
 							return err
@@ -4087,7 +4085,7 @@ func (s *Session) Sync2(beans ...interface{}) error {
 
 			for name2, index2 := range oriTable.Indexes {
 				if _, ok := foundIndexNames[name2]; !ok {
-					sql := engine.dialect.DropIndexSql(table.Name, index2)
+					sql := engine.dialect.DropIndexSql(tbName, index2)
 					_, err = engine.Exec(sql)
 					if err != nil {
 						return err
@@ -4099,13 +4097,15 @@ func (s *Session) Sync2(beans ...interface{}) error {
 				if index.Type == core.UniqueType {
 					session := engine.NewSession()
 					session.Statement.RefTable = table
+					session.Statement.tableName = tbName
 					defer session.Close()
-					err = session.addUnique(table.Name, name)
+					err = session.addUnique(tbName, name)
 				} else if index.Type == core.IndexType {
 					session := engine.NewSession()
 					session.Statement.RefTable = table
+					session.Statement.tableName = tbName
 					defer session.Close()
-					err = session.addIndex(table.Name, name)
+					err = session.addIndex(tbName, name)
 				}
 				if err != nil {
 					return err
@@ -4117,28 +4117,27 @@ func (s *Session) Sync2(beans ...interface{}) error {
 	for _, table := range tables {
 		var oriTable *core.Table
 		for _, structTable := range structTables {
-			if table.Name == structTable.Name {
+			if equalNoCase(table.Name, session.tbNameNoSchema(structTable)) {
 				oriTable = structTable
 				break
 			}
 		}
 
 		if oriTable == nil {
-			engine.LogWarnf("Table %s has no struct to mapping it", table.Name)
+			//engine.LogWarnf("Table %s has no struct to mapping it", table.Name)
 			continue
 		}
 
 		for _, colName := range table.ColumnsSeq() {
 			if oriTable.GetColumn(colName) == nil {
-				engine.LogWarnf("Table %s has column %s but struct has not related field",
-					table.Name, colName)
+				engine.logger.Warnf("Table %s has column %s but struct has not related field", table.Name, colName)
 			}
 		}
 	}
 	return nil
 }
 
-// Always disable struct tag "deleted"
+// Unscoped always disable struct tag "deleted"
 func (session *Session) Unscoped() *Session {
 	session.Statement.Unscoped()
 	return session

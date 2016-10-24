@@ -13,10 +13,6 @@ import (
 	"github.com/go-xorm/core"
 )
 
-// func init() {
-// 	RegisterDialect("oracle", &oracle{})
-// }
-
 var (
 	oracleReservedWords = map[string]bool{
 		"ACCESS":                    true,
@@ -637,9 +633,7 @@ func (db *oracle) TableCheckSql(tableName string) (string, []interface{}) {
 
 func (db *oracle) MustDropTable(tableName string) error {
 	sql, args := db.TableCheckSql(tableName)
-	if db.Logger != nil {
-		db.Logger.Info("[sql]", sql, args)
-	}
+	db.LogSQL(sql, args)
 
 	rows, err := db.DB().Query(sql, args...)
 	if err != nil {
@@ -652,9 +646,8 @@ func (db *oracle) MustDropTable(tableName string) error {
 	}
 
 	sql = "Drop Table \"" + tableName + "\""
-	if db.Logger != nil {
-		db.Logger.Info("[sql]", sql)
-	}
+	db.LogSQL(sql, args)
+
 	_, err = db.DB().Exec(sql)
 	return err
 }
@@ -669,10 +662,9 @@ func (db *oracle) IsColumnExist(tableName, colName string) (bool, error) {
 	args := []interface{}{tableName, colName}
 	query := "SELECT column_name FROM USER_TAB_COLUMNS WHERE table_name = :1" +
 		" AND column_name = :2"
+	db.LogSQL(query, args)
+
 	rows, err := db.DB().Query(query, args...)
-	if db.Logger != nil {
-		db.Logger.Info("[sql]", query, args)
-	}
 	if err != nil {
 		return false, err
 	}
@@ -688,11 +680,9 @@ func (db *oracle) GetColumns(tableName string) ([]string, map[string]*core.Colum
 	args := []interface{}{tableName}
 	s := "SELECT column_name,data_default,data_type,data_length,data_precision,data_scale," +
 		"nullable FROM USER_TAB_COLUMNS WHERE table_name = :1"
+	db.LogSQL(s, args)
 
 	rows, err := db.DB().Query(s, args...)
-	if db.Logger != nil {
-		db.Logger.Info("[sql]", s, args)
-	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -702,7 +692,7 @@ func (db *oracle) GetColumns(tableName string) ([]string, map[string]*core.Colum
 	colSeq := make([]string, 0)
 	for rows.Next() {
 		col := new(core.Column)
-		col.Indexes = make(map[string]bool)
+		col.Indexes = make(map[string]int)
 
 		var colName, colDefault, nullable, dataType, dataPrecision, dataScale *string
 		var dataLen int
@@ -787,11 +777,9 @@ func (db *oracle) GetColumns(tableName string) ([]string, map[string]*core.Colum
 func (db *oracle) GetTables() ([]*core.Table, error) {
 	args := []interface{}{}
 	s := "SELECT table_name FROM user_tables"
+	db.LogSQL(s, args)
 
 	rows, err := db.DB().Query(s, args...)
-	if db.Logger != nil {
-		db.Logger.Info("[sql]", s, args)
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -814,11 +802,9 @@ func (db *oracle) GetIndexes(tableName string) (map[string]*core.Index, error) {
 	args := []interface{}{tableName}
 	s := "SELECT t.column_name,i.uniqueness,i.index_name FROM user_ind_columns t,user_indexes i " +
 		"WHERE t.index_name = i.index_name and t.table_name = i.table_name and t.table_name =:1"
+	db.LogSQL(s, args)
 
 	rows, err := db.DB().Query(s, args...)
-	if db.Logger != nil {
-		db.Logger.Info("[sql]", s, args)
-	}
 	if err != nil {
 		return nil, err
 	}
